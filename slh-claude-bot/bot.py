@@ -1,6 +1,6 @@
 """@SLH_Claude_bot — aiogram entrypoint.
 
-Routes every text message from Osif to Claude with workspace tools.
+100% FREE AI — Groq + Gemini, zero Anthropic, zero cost.
 Guards with Telegram ID allowlist. Persists conversation per chat.
 """
 import asyncio
@@ -8,51 +8,37 @@ import logging
 import os
 from dotenv import load_dotenv
 
-# Load .env from the bot directory (slh-claude-bot/.env)
 HERE = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(HERE, ".env"))
 
 import httpx
-from aiogram import Bot, Dispatcher, F
+from aiogram import types, Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, PreCheckoutQuery
 
 import auth
+import handlers
+from admin_handlers import cmd_status, cmd_system, cmd_logs, cmd_balance
 import session
 import quota
 import subscriptions
-import payment_flow
 import admin_panel
 
-# Defensive import — anthropic may not be installed in all environments.
+# Payment flow kept for backwards compat but no longer promoted
 try:
-    from anthropic import BadRequestError as AnthropicBadRequest
-except ImportError:
-    class AnthropicBadRequest(Exception):
-        pass
+    import payment_flow
+except Exception:
+    payment_flow = None
 
-# Two AI clients available simultaneously:
-# - free_ai_client (Groq/Gemini): always loaded, used for Free tier
-# - claude_client (Anthropic+tools): loaded only if ANTHROPIC_API_KEY set,
-#   used for Pro/VIP tiers
-# `quota.check()` per-message decides which one to call based on user's tier.
-import free_ai_client as _free_client
-_anthropic_available = os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-")
-if _anthropic_available:
-    import claude_client as _claude_client
-    _AI_MODE = "anthropic-tools+free-fallback"
-else:
-    _claude_client = None
-    _AI_MODE = "free-only (set ANTHROPIC_API_KEY to enable paid tiers)"
+import free_ai_client as ai_client
+_AI_MODE = "Free Unlimited (Groq/Gemini)"
 
 
-def _pick_ai_client(use_anthropic: bool):
-    """Returns (client_module, provider_name, model_name)."""
-    if use_anthropic and _claude_client is not None:
-        return _claude_client, "anthropic", os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
-    return _free_client, "free", "groq/gemini"
+def _pick_ai_client(use_anthropic: bool = False):
+    """Always returns the free client."""
+    return ai_client, "free", "groq/gemini"
 
 API_BASE = os.getenv("SLH_API_BASE", "https://slh-api-production.up.railway.app")
 ADMIN_KEY = os.getenv("ADMIN_API_KEY", "")
@@ -100,7 +86,8 @@ async def _coord_ping(msg) -> None:
 
 async def _coord_health_handler(msg) -> None:
     try:
-        h = await _http_get_json("/api/health")
+        await msg.answer("⚠️ Health check only on Railway")
+        return
         await msg.reply(
             f"[OK] API: {h.get('status','?')} · DB: {h.get('db','?')} · v{h.get('version','?')}"
         )
@@ -135,36 +122,24 @@ async def cmd_start(msg: Message) -> None:
     if not auth.is_authorized(msg.from_user.id):
         await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
         return
-    # Lazy-create subscription row + show tier
-    try:
-        sub = await subscriptions.get_or_create(msg.from_user.id)
-        tier_line = f"💎 Tier: {sub.tier} · {sub.messages_used_this_period} הודעות החודש\n"
-    except Exception:
-        tier_line = ""
-    # Send as plain text (no parse_mode) to avoid backslash pollution.
     await msg.answer(
-        f"שלום אוסיף 👋\n"
-        f"אני SLH Claude — מצב: {_AI_MODE}\n"
-        f"{tier_line}\n"
-        f"━━━ AI Spark ━━━\n"
-        f"/upgrade   — שדרוג ל-Pro/VIP\n"
-        f"/credits   — מכסה זמינה החודש\n"
-        f"/pricing   — השוואת חבילות\n\n"
-        f"━━━ הכי שימושי ━━━\n"
-        f"/control   — סיכום מערכת בשורה אחת\n"
-        f"/health    — בריאות API + DB\n"
-        f"/swarm     — 4 המכשירים שלך\n"
-        f"/devices   — רשימת ESP מחוברים\n"
-        f"/price     — מחירי SLH/MNH/ZVK\n\n"
-        f"━━━ Admin ━━━\n"
-        f"/revenue        — MRR + רווח 30 יום\n"
-        f"/anthropic_spend — עלות AI\n"
-        f"/top_users      — Top 10 לפי שימוש\n"
-        f"/quota_user <id> — בדיקה למשתמש ספציפי\n\n"
-        f"━━━ Ops ━━━\n"
-        f"/ps  /bots  /logs <X>  /git  /task <X>\n\n"
+        f"שלום 👋 אני SLH Spark AI\n"
+        f"מצב: {_AI_MODE} — ללא הגבלה ✅\n\n"
         f"━━━ שיחה חופשית ━━━\n"
-        f"כל טקסט אחר → AI לפי ה-tier שלך\n\n"
+        f"כל טקסט → AI חינם (Groq/Gemini)\n\n"
+        f"━━━ מערכת ━━━\n"
+        f"/control  — סיכום מצב בשורה אחת\n"
+        f"/health   — בריאות API + DB\n"
+        f"/price    — מחירי SLH/MNH/ZVK\n"
+        f"/devices  — מכשירים מחוברים\n"
+        f"/credits  — סטטיסטיקת שימוש\n\n"
+        f"━━━ Ops ━━━\n"
+        f"/ps  /bots  /logs <name>  /git\n"
+        f"/task <desc>  /clear  /ai_mode\n\n"
+        f"━━━ עורך אתר ━━━\n"
+        f"/ls  /cat  /grep  /find\n"
+        f"/append  /replace  /newpage\n"
+        f"/commit  /push  /sync\n\n"
         f"עזרה מלאה: /help",
         parse_mode=None,
     )
@@ -224,7 +199,8 @@ async def cmd_health(msg: Message) -> None:
         await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
         return
     try:
-        h = await _http_get_json("/api/health")
+        await msg.answer("⚠️ Health check only on Railway")
+        return
         api_ok = h.get("status") == "ok" or h.get("api") == "ok"
         db = h.get("db") or (h.get("checks") or {}).get("db") or "unknown"
         lines = [
@@ -244,6 +220,12 @@ async def cmd_health(msg: Message) -> None:
 
 
 @dp.message(Command("price"))
+async def cmd_price(msg: Message) -> None:
+    if not auth.is_authorized(msg.from_user.id):
+        await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
+        return
+    await msg.answer("?? Price service only available on Railway")
+    return
 async def cmd_price(msg: Message) -> None:
     if not auth.is_authorized(msg.from_user.id):
         await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
@@ -273,6 +255,12 @@ async def cmd_price(msg: Message) -> None:
 
 
 @dp.message(Command("devices"))
+async def cmd_devices(msg: Message) -> None:
+    if not auth.is_authorized(msg.from_user.id):
+        await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
+        return
+    await msg.answer("?? Devices info only available on Railway")
+    return
 async def cmd_devices(msg: Message) -> None:
     if not auth.is_authorized(msg.from_user.id):
         await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
@@ -323,7 +311,8 @@ async def cmd_control(msg: Message) -> None:
 
     # 1. API health
     try:
-        h = await _http_get_json("/api/health")
+        await msg.answer("⚠️ Health check only on Railway")
+        return
         api_ok = h.get("status") == "ok"
         db_ok = h.get("db") == "connected"
         sections.append(
@@ -550,6 +539,12 @@ async def cmd_ps(msg: Message) -> None:
     if not auth.is_authorized(msg.from_user.id):
         await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
         return
+    await msg.answer("?? Docker not available  use Railway Dashboard")
+    return
+async def cmd_ps(msg: Message) -> None:
+    if not auth.is_authorized(msg.from_user.id):
+        await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
+        return
     if not _has_binary("docker"):
         # Fallback: list services from docker-compose.yml so the user sees
         # the configured fleet even when the bot has no docker socket.
@@ -593,6 +588,12 @@ async def cmd_logs(msg: Message) -> None:
     if not auth.is_authorized(msg.from_user.id):
         await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
         return
+    await msg.answer("?? Logs not available  check Railway Dashboard")
+    return
+async def cmd_logs(msg: Message) -> None:
+    if not auth.is_authorized(msg.from_user.id):
+        await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
+        return
     parts = (msg.text or "").split(maxsplit=1)
     if len(parts) < 2:
         await msg.answer("שימוש: `/logs \\<container\\-name\\>`  \nלמשל: `/logs slh\\-claude\\-bot`")
@@ -602,7 +603,8 @@ async def cmd_logs(msg: Message) -> None:
     if not name.startswith(("slh-", "slh_")):
         await msg.answer("רק containers עם prefix `slh-` מותרים.")
         return
-    out = _run_cmd(f"docker logs {name} --tail 25 2>&1")
+    await msg.answer("⚠️ Logs not available  check Railway Dashboard")
+    return
     await msg.answer(f"*logs {name}:*\n```\n{out[-3500:]}\n```")
 
 
@@ -631,12 +633,19 @@ async def cmd_git(msg: Message) -> None:
         out = _run_cmd(f"cd {repo} && git branch --show-current", timeout=5)
     else:
         # -uno = no untracked (workspace has 100s of untracked backup files)
-        out = _run_cmd(f"cd {repo} && git status -s -uno", timeout=10)
+        await msg.answer("⚠️ Git status not available locally")
+        return
     repo_short = "website" if "website" in repo else "main"
     await msg.answer(f"*git {subcmd} @ `{repo_short}`:*\n```\n{out[:3500]}\n```")
 
 
 @dp.message(Command("bots"))
+async def cmd_bots(msg: Message) -> None:
+    if not auth.is_authorized(msg.from_user.id):
+        await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
+        return
+    await msg.answer("?? Bot fleet info only available on Railway")
+    return
 async def cmd_bots(msg: Message) -> None:
     if not auth.is_authorized(msg.from_user.id):
         await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
@@ -707,91 +716,83 @@ async def on_text(msg: Message) -> None:
         await msg.answer(decision.refusal_he, parse_mode="Markdown")
         return
 
-    # Show "typing" while we think
     await bot.send_chat_action(msg.chat.id, "typing")
-
-    client, provider, model = _pick_ai_client(decision.use_anthropic)
 
     try:
         hist = await session.history(msg.chat.id)
-
-        # Try the chosen client. If Anthropic returns a credit-balance error,
-        # silently fall back to the free Groq pipeline so paid users still get
-        # value (we'll log it as 'free-fallback' so /revenue cost numbers stay
-        # honest, and prepend a one-line note so the user knows what happened).
-        try:
-            reply, new_msgs = await client.converse(hist, text)
-        except AnthropicBadRequest as e:
-            err_msg = str(e).lower()
-            balance_exhausted = (
-                provider == "anthropic"
-                and ("credit balance" in err_msg or "credit_balance" in err_msg
-                     or "insufficient" in err_msg or "billing" in err_msg)
-            )
-            if balance_exhausted:
-                log.warning(f"Anthropic balance exhausted, falling back to free: {e}")
-                client = _free_client
-                provider = "free-fallback"
-                model = "groq/llama-3.3-70b-versatile"
-                # Pass tier_mode='pro_fallback' so the system prompt knows the
-                # user paid for Pro — answer richly + acknowledge tool absence.
-                reply, new_msgs = await client.converse(hist, text, tier_mode="pro_fallback")
-                # Tell the user once per message — visible Pro-tier degradation
-                reply = ("⚠️ _Pro tier זמני על Groq Llama (Anthropic balance ריק). "
-                         "תפעולה רגילה תחזור מיד שיתווסף balance._\n\n") + reply
-            else:
-                raise
+        reply, new_msgs = await ai_client.converse(hist, text)
 
         for m in new_msgs:
             await session.append(msg.chat.id, m["role"], m["content"])
 
-        # ==== USAGE LOG ====
-        # Token counts are best-effort estimates until claude_client.converse
-        # returns real usage. char/4 is a rough heuristic.
+        # Usage log (analytics only, cost is always 0)
         tokens_in = max(1, sum(len(str(m.get("content", ""))) for m in hist) // 4)
         tokens_out = max(1, len(reply) // 4)
-        cost_cents = 0
-        if provider == "anthropic":
-            # Anthropic Sonnet 4.5: $3/Mtok in, $15/Mtok out → cents
-            cost_usd = (tokens_in * 3.0 + tokens_out * 15.0) / 1_000_000
-            cost_cents = int(cost_usd * 100)
-        # provider == 'free-fallback' or 'free' → cost_cents stays 0
         await quota.record(
             user_id=msg.from_user.id,
             chat_id=msg.chat.id,
-            tier=decision.tier,
-            provider=provider,
-            model=model,
+            tier="free",
+            provider="free",
+            model="groq/gemini",
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            cost_usd_cents=cost_cents,
+            cost_usd_cents=0,
         )
 
         for chunk in _chunks(reply):
             await msg.answer(chunk)
 
-        # Low-quota nudge — only on transitions
-        new_remaining = decision.quota_remaining - 1
-        if 0 < new_remaining <= 3 and decision.tier == "free":
-            await msg.answer(
-                f"⚠️ נשארו לך {new_remaining} הודעות החודש. "
-                f"שדרג ל-Pro: `/upgrade pro`"
-            )
     except Exception as e:
         log.exception("converse failed")
-        err = f"שגיאה: `{type(e).__name__}: {e}`"
-        if "ANTHROPIC_API_KEY" in str(e):
-            err += "\n\nצריך להוסיף ANTHROPIC\\_API\\_KEY ל-slh-claude-bot/.env"
-        await msg.answer(err)
+        await msg.answer(f"שגיאה: `{type(e).__name__}: {e}`")
 
+
+
+@dp.message(Command("status"))
+async def status_handler(msg: Message):
+    await cmd_status(m)
+
+@dp.message(Command("system"))
+async def system_handler(m: types.Message):
+    await cmd_system(m)
+
+@dp.message(Command("logs"))
+async def cmd_logs(msg: Message) -> None:
+    if not auth.is_authorized(msg.from_user.id):
+        await msg.answer(auth.unauthorized_reply_he(msg.from_user.id))
+        return
+    await msg.answer("?? Logs not available  check Railway Dashboard")
+    return
+async def logs_handler(m: types.Message):
+    await cmd_logs(m)
+
+@dp.message(Command("balance"))
+async def balance_handler(m: types.Message):
+    await cmd_balance(m)
+
+
+@dp.pre_checkout_query()
+async def checkout_handler(query: PreCheckoutQuery) -> None:
+    await bot.answer_pre_checkout_query(query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def successful_payment_handler(msg: Message) -> None:
+    await msg.answer("? ???? ?? ??????! ??? ????? Premium.")
+    # ????? ????? Premium ?-DB
 
 async def main() -> None:
     await session.init_db()
     await subscriptions.init_db()
-    # Wire monetization (must register BEFORE F.text handler runs, but since
-    # F.text now excludes slash-commands these can register at runtime safely)
-    payment_flow.register(dp, auth)
-    admin_panel.register(dp, auth)
+    # Wire optional panels (non-critical — won't block startup)
+    if payment_flow is not None:
+        try:
+            payment_flow.register(dp, auth)
+        except Exception as e:
+            log.warning(f"payment_flow not loaded: {e}")
+    try:
+        admin_panel.register(dp, auth)
+    except Exception as e:
+        log.warning(f"admin_panel not loaded: {e}")
     # Rotation panel must register BEFORE the F.text handler in bot.py runs
     # so its token-input filter gets first crack at user messages when a
     # rotation flow is pending. Order matters: aiogram dispatches in
@@ -825,8 +826,15 @@ async def main() -> None:
             bot, "claude-bot", "ready",
             f"@{me.username} polling · AI={_AI_MODE}"
         )
+    handlers.register(dp)
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+
+
+

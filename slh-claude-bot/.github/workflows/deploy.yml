@@ -1,0 +1,22 @@
+﻿name: Deploy Bot
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NSSM (via choco)
+        run: choco install nssm -y
+      - name: Stop bot service
+        run: nssm stop SLH_Bot
+        continue-on-error: true
+      - name: Copy files
+        run: |
+          Copy-Item -Path * -Destination "D:\SLH_ECOSYSTEM\slh-claude-bot\" -Recurse -Force
+      - name: Start bot service
+        run: nssm start SLH_Bot

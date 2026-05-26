@@ -1,129 +1,194 @@
-"""Free AI client — drop-in replacement for claude_client.
+"""Free AI client — 100% free, zero credit card, zero Anthropic.
 
-Instead of calling Anthropic directly (paid), this routes through the SLH API's
-`/api/ai/chat` endpoint which has a multi-provider fallback chain:
-  groq (free Llama 3.3 70B) → gemini → together → openai
+Provider chain (first available key wins):
+  1. Groq  → llama-3.3-70b-versatile  (30 RPM / 14,400 RPD free tier)
+  2. Gemini → gemini-2.0-flash          (15 RPM / 1 M TPD free tier)
+  3. Railway API → /api/ai/chat         (internal fallback, uses Groq/Gemini on server)
+  4. Built-in local response             (always works, no key needed)
 
-This means @SLH_Claude_bot works at zero cost per message.
+Get free keys (2 min each, no credit card):
+  Groq:   https://console.groq.com  → "Create API Key"
+  Gemini: https://aistudio.google.com → "Get API key"
 
-No tool use here (the multi-provider endpoint is chat-only); for executor
-capabilities the bot exposes slash commands (/ps, /logs, /git, /exec).
-
-Public surface matches claude_client.converse() so bot.py needs minimal changes.
+Set in slh-claude-bot/.env:
+  GROQ_API_KEY=gsk_...
+  GEMINI_API_KEY=AIza...
 """
 from __future__ import annotations
-import os
+
 import logging
+import os
 from typing import List, Tuple
 
 import httpx
 
 log = logging.getLogger("slh-claude-bot.free-ai")
 
-API_BASE = os.getenv("SLH_API_BASE", "https://slh-api-production.up.railway.app")
-AI_ENDPOINT = os.getenv("SLH_AI_ENDPOINT", "/api/ai/chat")
-AI_USER_ID = os.getenv("SLH_AI_USER_ID", "claude_bot_admin")
-DEFAULT_LANG = os.getenv("SLH_AI_LANG", "he")
-TIMEOUT = float(os.getenv("SLH_AI_TIMEOUT", "45"))
+# ── Config ──────────────────────────────────────────────────────────────────
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+RAILWAY_BASE   = os.getenv("SLH_API_BASE", "https://slh-api-production.up.railway.app")
+TIMEOUT        = float(os.getenv("SLH_AI_TIMEOUT", "30"))
 
-_SYSTEM_PROMPT_FREE = (
-    "אתה SLH Claude — עוזר אישי של אוסיף ומשתמשי SLH Spark. "
-    "**אל תציג את עצמך בכל תשובה.** ענה ישר לשאלה. עברית, קצר.\n"
-    "אם נשאלת על פעולות מערכת (docker/git/קבצים) — הציע slash commands: "
-    "/ps /logs <bot> /git /health /price /devices /credits.\n"
-    "לא חורג מנושאי SLH אלא אם ברור. רקע: website (slh-nft.com), "
-    "API (Railway), 25 Telegram bots, SLH token (BSC), Phase 2 (Voice/Swarm)."
+GROQ_MODEL_PRIMARY  = "llama-3.3-70b-versatile"
+GROQ_MODEL_FALLBACK = "llama-3.1-8b-instant"
+GEMINI_MODEL        = "gemini-2.0-flash"
+
+SYSTEM_PROMPT = (
+    "אתה SLH Spark AI — עוזר אישי חכם של אוסיף ומשתמשי SLH Spark.\n"
+    "ענה תמיד בעברית, קצר ופרקטי. אל תציג את עצמך בכל תשובה.\n"
+    "רקע: SLH Spark = פלטפורמת קריפטו ישראלית עם 26 בוטים בטלגרם, "
+    "אתר slh-nft.com, API על Railway, טוקן SLH על BSC, ו-TON chain.\n"
+    "אם המשתמש שואל על docker/git/deploy — הצע פקודות: /ps /logs /git /health /control\n"
+    "אם לא יודע — אמור זאת ישירות במקום להמציא."
 )
 
-_SYSTEM_PROMPT_PRO_FALLBACK = (
-    "אתה SLH Claude (Pro mode · fallback). "
-    "**אל תציג את עצמך בכל תשובה.** ענה ישירות, בעברית, קצר ופרקטי.\n"
-    "המשתמש שילם על חבילת Pro עם Claude + tools, אבל כעת Anthropic balance ריק "
-    "ואתה רץ דרך Groq Llama 3.3 70B ללא יכולת לבצע tools. "
-    "אם נשאלת לבצע פעולה (קריאת קובץ, git, deploy) — הסבר שזה ידרוש את ה-Anthropic "
-    "balance ושפעולות ידניות אפשריות עם slash commands: /ps /logs <bot> /git /health "
-    "/devices /control /swarm /credits /upgrade.\n"
-    "לעומת זאת, אתה כן יכול: לתת ייעוץ, לכתוב טקסטים, לעשות research, לסכם, לתרגם, "
-    "לתכנן ארכיטקטורה, לעזור עם debug היפותטי. הצע ערך גם בלי tools."
+# ── Provider 1: Groq ─────────────────────────────────────────────────────────
+async def _call_groq(messages: list[dict], model: str = GROQ_MODEL_PRIMARY) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 1024,
+        "temperature": 0.7,
+    }
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        reply = data["choices"][0]["message"]["content"].strip()
+        used_model = data.get("model", model)
+        return f"{reply}\n\n_[Groq · {used_model}]_"
+
+
+# ── Provider 2: Gemini ───────────────────────────────────────────────────────
+async def _call_gemini(messages: list[dict]) -> str:
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
+    # Convert OpenAI-style messages to Gemini format
+    parts = []
+    for m in messages:
+        role = "user" if m["role"] == "user" else "model"
+        parts.append({"role": role, "parts": [{"text": m["content"]}]})
+
+    payload = {"contents": parts}
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        reply = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return f"{reply}\n\n_[Gemini · {GEMINI_MODEL}]_"
+
+
+# ── Provider 3: Railway API (internal Groq/Gemini) ───────────────────────────
+async def _call_railway(user_text: str, context: str) -> str:
+    url = RAILWAY_BASE.rstrip("/") + "/api/ai/chat"
+    full_msg = (SYSTEM_PROMPT + "\n\n" + context + "\n\n" + user_text) if context else (SYSTEM_PROMPT + "\n\n" + user_text)
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        resp = await client.post(url, json={"message": full_msg, "user_id": "slh_bot", "lang": "he"})
+        resp.raise_for_status()
+        data = resp.json()
+        reply = data.get("reply") or data.get("message") or "(ריק)"
+        model = data.get("model", "railway")
+        return f"{reply}\n\n_[{model}]_"
+
+
+# ── Provider 4: Local fallback ───────────────────────────────────────────────
+_LOCAL_REPLY = (
+    "⚙️ אין חיבור ל-AI כרגע.\n\n"
+    "הוסף מפתח חינמי ל-slh-claude-bot/.env:\n"
+    "`GROQ_API_KEY=gsk_...` ← console.groq.com (חינם)\n"
+    "`GEMINI_API_KEY=AIza...` ← aistudio.google.com (חינם)\n\n"
+    "פקודות שעובדות ללא AI:\n"
+    "/ps /logs /git /health /control /price /devices"
 )
 
-# Backwards compat default
-_SYSTEM_PROMPT = _SYSTEM_PROMPT_FREE
 
-
-async def converse(history: List[dict], user_text: str,
-                   tier_mode: str = "free") -> Tuple[str, List[dict]]:
-    """Send user_text to /api/ai/chat and return (reply, new_msgs_for_history).
-
-    Signature-compatible with claude_client.converse() so bot.py can swap us in.
-
-    Args:
-        history: list of {"role": "user"|"assistant", "content": str}
-        user_text: the new user message
-        tier_mode: 'free' or 'pro_fallback' — selects appropriate system prompt
-                   so Pro users in fallback get a more capable / honest persona.
-
-    Returns:
-        (reply_text, new_msgs) where new_msgs is the pair [user_msg, assistant_msg]
-        ready to append to session history.
-    """
-    # Build context from history (keep last 6 turns = ~12 msgs for Groq context window)
-    context_parts = []
-    for m in history[-12:]:
+# ── Public API ───────────────────────────────────────────────────────────────
+def _build_messages(history: List[dict], user_text: str) -> list[dict]:
+    """Build OpenAI-compatible message list with system prompt."""
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for m in history[-10:]:  # last 5 turns
         role = m.get("role", "user")
         content = m.get("content", "")
         if isinstance(content, list):
-            # Legacy anthropic format — extract text
             content = " ".join(
-                block.get("text", "") if isinstance(block, dict) else str(block)
-                for block in content
+                b.get("text", "") if isinstance(b, dict) else str(b) for b in content
             )
-        context_parts.append(f"[{role}] {content}")
+        if role in ("user", "assistant") and content.strip():
+            msgs.append({"role": role, "content": content})
+    msgs.append({"role": "user", "content": user_text})
+    return msgs
 
-    context_block = "\n".join(context_parts) if context_parts else ""
-    if tier_mode == "pro_fallback":
-        composed = _SYSTEM_PROMPT_PRO_FALLBACK
-    else:
-        composed = _SYSTEM_PROMPT_FREE
-    if context_block:
-        composed += "\n\n--- שיחה קודמת ---\n" + context_block
-    composed += f"\n\n--- הודעה נוכחית ---\n{user_text}"
 
-    payload = {
-        "message": composed,
-        "user_id": AI_USER_ID,
-        "lang": DEFAULT_LANG,
-    }
+async def converse(
+    history: List[dict],
+    user_text: str,
+    tier_mode: str = "free",  # kept for API compat, ignored
+) -> Tuple[str, List[dict]]:
+    """Main entry point. Tries Groq → Gemini → Railway → local fallback."""
+    msgs = _build_messages(history, user_text)
+    reply = None
 
-    url = API_BASE.rstrip("/") + AI_ENDPOINT
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.TimeoutException:
-        reply = "⏱ ה-AI השתהה (timeout). נסה שוב או פצל לשאלה קצרה יותר."
-    except httpx.HTTPStatusError as e:
-        log.error(f"AI endpoint returned {e.response.status_code}: {e.response.text[:200]}")
-        reply = f"⚠️ ה-AI endpoint החזיר {e.response.status_code}. נסה שוב בעוד רגע."
-    except Exception as e:
-        log.exception("AI call failed")
-        reply = f"⚠️ שגיאה: {type(e).__name__}: {str(e)[:120]}"
-    else:
-        reply = data.get("reply") or data.get("detail") or "(התגובה הייתה ריקה)"
-        model = data.get("model", "unknown")
-        # Append provider tag for transparency
-        if model and model != "unknown":
-            reply += f"\n\n_{model}_"
+    # 1. Groq
+    if GROQ_API_KEY and GROQ_API_KEY.startswith("gsk_"):
+        try:
+            reply = await _call_groq(msgs, GROQ_MODEL_PRIMARY)
+            log.info("Groq answered (%d chars)", len(reply))
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                log.warning("Groq rate-limited, trying fallback model")
+                try:
+                    reply = await _call_groq(msgs, GROQ_MODEL_FALLBACK)
+                except Exception as e2:
+                    log.warning("Groq fallback failed: %s", e2)
+            else:
+                log.warning("Groq error %s: %s", e.response.status_code, e.response.text[:200])
+        except Exception as e:
+            log.warning("Groq failed: %s", e)
+
+    # 2. Gemini
+    if reply is None and GEMINI_API_KEY and GEMINI_API_KEY.startswith("AIza"):
+        try:
+            reply = await _call_gemini(msgs)
+            log.info("Gemini answered (%d chars)", len(reply))
+        except Exception as e:
+            log.warning("Gemini failed: %s", e)
+
+    # 3. Railway internal API
+    if reply is None:
+        try:
+            context = "\n".join(
+                f"[{m['role']}] {m['content']}"
+                for m in msgs[1:-1]  # skip system + last user
+                if isinstance(m.get("content"), str)
+            )
+            reply = await _call_railway(user_text, context)
+            log.info("Railway API answered (%d chars)", len(reply))
+        except Exception as e:
+            log.warning("Railway API failed: %s", e)
+
+    # 4. Local fallback
+    if reply is None:
+        reply = _LOCAL_REPLY
 
     new_msgs = [
-        {"role": "user", "content": user_text},
+        {"role": "user",      "content": user_text},
         {"role": "assistant", "content": reply},
     ]
     return reply, new_msgs
 
 
-# Backwards-compatible alias
-async def chat(history: List[dict], user_text: str,
-               tier_mode: str = "free") -> Tuple[str, List[dict]]:
+# Backwards-compat alias
+async def chat(
+    history: List[dict],
+    user_text: str,
+    tier_mode: str = "free",
+) -> Tuple[str, List[dict]]:
     return await converse(history, user_text, tier_mode=tier_mode)

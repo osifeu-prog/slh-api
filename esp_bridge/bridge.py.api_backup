@@ -1,0 +1,34 @@
+﻿import serial, asyncio, json
+from aiohttp import web
+
+PORT = "COM5"
+BAUD = 115200
+
+async def send_cmd(request):
+    data = await request.json()
+    cmd = data.get("cmd", "")
+    try:
+        s = serial.Serial(PORT, BAUD, timeout=2)
+        s.write((cmd + "\n").encode('utf-8'))
+        await asyncio.sleep(1)
+        resp = s.read(500).decode(errors="ignore").strip()
+        s.close()
+        return web.json_response({"ok": True, "response": resp})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)})
+
+async def status(request):
+    try:
+        s = serial.Serial(PORT, BAUD, timeout=1)
+        s.close()
+        return web.json_response({"ok": True, "port": PORT, "status": "connected"})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)})
+
+app = web.Application()
+app.router.add_post("/cmd", send_cmd)
+app.router.add_get("/status", status)
+
+if __name__ == "__main__":
+    print("🚀 ESP Bridge listening on http://0.0.0.0:8765")
+    web.run_app(app, host="0.0.0.0", port=8765)
