@@ -8,7 +8,7 @@ import httpx
 
 load_dotenv()
 
-DB_URL = os.getenv("DATABASE_PUBLIC_URL") or os.getenv("DB_URL")
+DB_URL = os.getenv("DATABASE_URL") or os.getenv("DATABASE_PUBLIC_URL") or os.getenv("DB_URL")
 BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN", "")
 OWNER_ID = 224223270
 SLH_CONTRACT = "0xACb0A09414CEA1C879c67bB7A877E4e19480f022"
