@@ -1,4 +1,4 @@
-﻿"""
+"""
 SLH Ecosystem API - FastAPI Backend
 Deployed on Railway | Connected to PostgreSQL
 """
@@ -11771,3 +11771,6 @@ async def performance_digest():
         "source_file": _P(latest).name,
         "token_count": len(tokens),
     }
+
+from routes.legacy_compat import router as legacy_compat_router
+app.include_router(legacy_compat_router)
