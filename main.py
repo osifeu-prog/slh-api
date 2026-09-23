@@ -5217,7 +5217,13 @@ ALLOWED_CATEGORIES = {"general", "digital", "physical", "nft", "course", "servic
 
 
 @app.post("/api/marketplace/list")
-async def marketplace_list_item(req: MarketplaceListRequest):
+async def marketplace_list_item(
+    req: MarketplaceListRequest,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    _require_owner(req.seller_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     """Create a new marketplace listing. Starts as 'pending' until admin approves."""
     title = (req.title or "").strip()
     if not title or len(title) < 3:
@@ -5372,7 +5378,13 @@ async def marketplace_get_item(item_id: int):
 
 
 @app.post("/api/marketplace/buy")
-async def marketplace_buy(req: MarketplaceBuyRequest):
+async def marketplace_buy(
+    req: MarketplaceBuyRequest,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    _require_owner(req.buyer_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     """Create an order for an approved marketplace item. Decrements stock atomically."""
     if req.quantity < 1:
         raise HTTPException(400, "Quantity must be at least 1")
