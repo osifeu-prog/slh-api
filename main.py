@@ -301,7 +301,8 @@ def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str 
     elif authorization and authorization.startswith("Bearer ") and JWT_SECRET:
         try:
             payload = jwt.decode(authorization[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            uid = int(payload.get("user_id") or 0)
+            raw = payload.get("sub") or payload.get("user_id") or 0
+            uid = int(raw) if str(raw).isdigit() else 0
             ok = uid == int(telegram_id) or uid == ADMIN_USER_ID
         except Exception:
             ok = False
@@ -334,7 +335,8 @@ def _auth_uid(
     if authorization and authorization.startswith("Bearer ") and JWT_SECRET:
         try:
             payload = jwt.decode(authorization[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            uid = int(payload.get("user_id") or 0)
+            raw = payload.get("sub") or payload.get("user_id") or 0
+            uid = int(raw) if str(raw).isdigit() else 0
             if uid:
                 return {"uid": uid, "kind": "admin" if uid == ADMIN_USER_ID else "user"}
         except Exception:
