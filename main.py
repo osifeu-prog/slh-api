@@ -1800,6 +1800,25 @@ async def refresh_external_wallet(
     }
 
 
+@app.post("/api/external-wallets/refresh/{wallet_id}")
+async def refresh_external_wallet(
+    wallet_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Refresh one wallet: verify ownership, then call impl."""
+    async with pool.acquire() as conn:
+        await _ensure_external_wallets_table(conn)
+        row = await conn.fetchrow(
+            "SELECT id, user_id, network, address FROM external_wallets WHERE id=$1", wallet_id
+        )
+        if not row:
+            raise HTTPException(404, "Wallet not found")
+        _require_owner(row["user_id"], authorization, x_admin_key, x_slh_service_token, allow_service=False)
+    return await _impl_refresh_external_wallet(wallet_id)
+
+
 @app.post("/api/external-wallets/refresh-all/{user_id}")
 async def refresh_all_external_wallets(
     user_id: int,
@@ -1817,7 +1836,7 @@ async def refresh_all_external_wallets(
     results = []
     for r in rows:
         try:
-            res = await refresh_external_wallet(r["id"])
+            res = await _impl_refresh_external_wallet(r["id"])
             results.append(res)
         except Exception as e:
             results.append({"wallet_id": r["id"], "error": str(e)[:100]})
