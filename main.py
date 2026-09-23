@@ -277,6 +277,30 @@ def _require_admin(authorization: Optional[str] = None, admin_key_header: Option
 
     raise HTTPException(403, "Admin authentication required")
 
+SELF_AUTH_ENFORCED = os.getenv("SELF_AUTH_ENFORCED", "0") == "1"
+
+def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str | None = None):
+    """Caller must present a JWT for this telegram_id (admins pass through).
+
+    While SELF_AUTH_ENFORCED is off this only logs, so nothing breaks.
+    """
+    ok = False
+    if x_admin_key and x_admin_key in ADMIN_API_KEYS:
+        ok = True
+    elif authorization and authorization.startswith("Bearer ") and JWT_SECRET:
+        try:
+            payload = jwt.decode(authorization[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            uid = int(payload.get("user_id") or 0)
+            ok = uid == int(telegram_id) or uid == ADMIN_USER_ID
+        except Exception:
+            ok = False
+    if not ok:
+        print(f"[SELF_AUTH] unauthenticated access to user {telegram_id}")
+        if SELF_AUTH_ENFORCED:
+            raise HTTPException(403, "Not authorized for this user")
+    return ok
+
+
 # ── Admin password hashing (SHA-256 + salt, no extra dependency) ──
 def hash_admin_password(password: str) -> str:
     salt = secrets.token_hex(16)
@@ -2774,7 +2798,8 @@ async def get_user_balances(conn, user_id: int):
 
 # === USER PROFILE ===
 @app.get("/api/user/{telegram_id}")
-async def get_user(telegram_id: int):
+async def get_user(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None)):
+    _require_self(telegram_id, authorization, x_admin_key)
     """Get user profile and balances"""
     async with pool.acquire() as conn:
         # Try web_users first, fallback to users table
@@ -4660,7 +4685,8 @@ async def auth_bot_sync(req: BotSyncRequest):
 
 # === UNIFIED USER ENDPOINT (single call for everything) ===
 @app.get("/api/user/full/{telegram_id}")
-async def get_user_full(telegram_id: int):
+async def get_user_full(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None)):
+    _require_self(telegram_id, authorization, x_admin_key)
     """Return EVERYTHING about a user in one call.
 
     Consolidates: profile, registration, wallets (internal + linked Web3),
