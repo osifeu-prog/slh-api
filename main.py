@@ -4383,8 +4383,21 @@ async def get_wallet_balances(user_id: int):
 
 
 @app.post("/api/wallet/deposit")
-async def record_deposit(req: DepositRequest, x_admin_override_zuz: Optional[str] = Header(None)):
-    """Record a deposit and credit token_balances"""
+async def record_deposit(
+    req: DepositRequest,
+    x_admin_override_zuz: Optional[str] = Header(None),
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Record a deposit and credit token_balances (self-authorized only)"""
+    _require_owner(
+        req.user_id,
+        authorization,
+        x_admin_key,
+        x_slh_service_token,
+        allow_service=False,
+    )
     if req.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
     if not req.tx_hash.strip():
