@@ -1660,8 +1660,14 @@ async def _ensure_external_wallets_table(conn):
 
 
 @app.post("/api/external-wallets/add")
-async def add_external_wallet(req: ExternalWalletAdd):
+async def add_external_wallet(
+    req: ExternalWalletAdd,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Add an external wallet address for the user (read-only tracking)."""
+    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     if not req.user_id or not req.address or len(req.address) < 10:
         raise HTTPException(400, "user_id + valid address required")
     network = req.network.upper()
@@ -1680,8 +1686,14 @@ async def add_external_wallet(req: ExternalWalletAdd):
 
 
 @app.get("/api/external-wallets/{user_id}")
-async def list_external_wallets(user_id: int):
+async def list_external_wallets(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """List all external wallets for a user with their last cached balance."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         await _ensure_external_wallets_table(conn)
         rows = await conn.fetch("""
@@ -1707,8 +1719,15 @@ async def list_external_wallets(user_id: int):
 
 
 @app.delete("/api/external-wallets/{wallet_id}")
-async def delete_external_wallet(wallet_id: int, user_id: int):
+async def delete_external_wallet(
+    wallet_id: int,
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Remove an external wallet (must own it)."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     async with pool.acquire() as conn:
         await _ensure_external_wallets_table(conn)
         deleted = await conn.execute(
@@ -1739,7 +1758,12 @@ async def _fetch_ton_balance(address: str) -> dict:
 
 
 @app.post("/api/external-wallets/refresh/{wallet_id}")
-async def refresh_external_wallet(wallet_id: int):
+async def refresh_external_wallet(
+    wallet_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Refresh balance for a single external wallet (calls public chain API)."""
     async with pool.acquire() as conn:
         await _ensure_external_wallets_table(conn)
@@ -1748,6 +1772,7 @@ async def refresh_external_wallet(wallet_id: int):
         )
         if not row:
             raise HTTPException(404, "Wallet not found")
+        _require_owner(row["user_id"], authorization, x_admin_key, x_slh_service_token, allow_service=False)
 
         balance_info = {"native": 0, "usdt": 0}
         if row["network"] == "TON":
@@ -1776,8 +1801,14 @@ async def refresh_external_wallet(wallet_id: int):
 
 
 @app.post("/api/external-wallets/refresh-all/{user_id}")
-async def refresh_all_external_wallets(user_id: int):
+async def refresh_all_external_wallets(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Refresh balances for all of a user's external wallets."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     async with pool.acquire() as conn:
         await _ensure_external_wallets_table(conn)
         rows = await conn.fetch(
