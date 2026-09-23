@@ -279,11 +279,22 @@ def _require_admin(authorization: Optional[str] = None, admin_key_header: Option
 
 SELF_AUTH_ENFORCED = os.getenv("SELF_AUTH_ENFORCED", "0") == "1"
 
-def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str | None = None):
+SLH_SERVICE_TOKEN = os.getenv("SLH_SERVICE_TOKEN", "")
+
+def _is_service_principal(token):
+    if not SLH_SERVICE_TOKEN or not token:
+        return False
+    import hmac
+    return hmac.compare_digest(token, SLH_SERVICE_TOKEN)
+
+def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str | None = None, x_slh_service_token: str | None = None):
     """Caller must present a JWT for this telegram_id (admins pass through).
 
     While SELF_AUTH_ENFORCED is off this only logs, so nothing breaks.
+    The service principal (X-SLH-Service-Token) is always accepted.
     """
+    if _is_service_principal(x_slh_service_token):
+        return True
     ok = False
     if x_admin_key and x_admin_key in ADMIN_API_KEYS:
         ok = True
@@ -2798,8 +2809,8 @@ async def get_user_balances(conn, user_id: int):
 
 # === USER PROFILE ===
 @app.get("/api/user/{telegram_id}")
-async def get_user(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None)):
-    _require_self(telegram_id, authorization, x_admin_key)
+async def get_user(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_self(telegram_id, authorization, x_admin_key, x_slh_service_token)
     """Get user profile and balances"""
     async with pool.acquire() as conn:
         # Try web_users first, fallback to users table
@@ -3894,6 +3905,8 @@ async def _init_community_tables():
     """Create community tables and seed if empty. Called after pool is ready."""
     async with pool.acquire() as conn:
         await conn.execute(COMMUNITY_SCHEMA)
+        await conn.execute("ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS telegram_id TEXT")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_community_posts_telegram_id ON community_posts(telegram_id)")
         count = await conn.fetchval("SELECT count(*) FROM community_posts")
         if count == 0:
             for i, (uname, txt, cat, likes) in enumerate(COMMUNITY_SEEDS):
@@ -3917,6 +3930,16 @@ async def _extended_startup():
         print(f"[payments-monitor] start warning: {e}")
 app.router.on_startup.clear()
 app.add_event_handler("startup", _extended_startup)
+
+
+async def require_telegram_user(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
+    from community_auth import verify_init_data
+    user = verify_init_data(x_telegram_init_data or "")
+    if user:
+        return user
+    if os.getenv("COMMUNITY_AUTH_ENFORCE", "0") == "1":
+        raise HTTPException(401, "Telegram authentication required")
+    return {"id": 0, "username": None}
 
 
 class CommunityPostCreate(BaseModel):
@@ -4011,12 +4034,25 @@ async def community_get_posts(category: str = Query("all"), limit: int = Query(5
 
 
 @app.post("/api/community/posts")
-async def community_create_post(body: CommunityPostCreate):
+async def community_create_post(body: CommunityPostCreate, tg_user: dict = Depends(require_telegram_user)):
     """Create a new community post"""
     if not body.text.strip() or not body.username.strip():
         raise HTTPException(400, "Username and text required")
-    if not _check_community_rate(f"post:{body.username}", 10):
+    authed = bool(tg_user and tg_user.get("id"))
+    rate_key = f"post:tg:{tg_user['id']}" if authed else f"post:{body.username}"
+    if not _check_community_rate(rate_key, 10):
         raise HTTPException(429, "Rate limit: max 10 posts per hour")
+
+    # Identity comes from the verified Telegram principal when authed.
+    # Body values are accepted only in shadow mode (no verified principal).
+    if authed:
+        effective_username = (tg_user.get("username") or "").strip()
+        effective_telegram_id = str(tg_user["id"])
+        if not effective_username:
+            effective_username = body.username.strip()
+    else:
+        effective_username = body.username.strip()
+        effective_telegram_id = (body.telegram_id or None)
 
     # Image validation: accept data URL only (frontend caps at 2MB), reject suspicious URLs
     image_data = body.image_data
@@ -4029,7 +4065,7 @@ async def community_create_post(body: CommunityPostCreate):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO community_posts (username, telegram_id, text, category, image_data) VALUES ($1,$2,$3,$4,$5) RETURNING id, username, telegram_id, text, category, image_data, likes_count, created_at",
-            body.username.strip(), body.telegram_id, body.text.strip(), body.category, image_data
+            effective_username, effective_telegram_id, body.text.strip(), body.category, image_data
         )
         post = dict(row)
         post["created_at"] = post["created_at"].isoformat()
@@ -4685,8 +4721,8 @@ async def auth_bot_sync(req: BotSyncRequest):
 
 # === UNIFIED USER ENDPOINT (single call for everything) ===
 @app.get("/api/user/full/{telegram_id}")
-async def get_user_full(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None)):
-    _require_self(telegram_id, authorization, x_admin_key)
+async def get_user_full(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_self(telegram_id, authorization, x_admin_key, x_slh_service_token)
     """Return EVERYTHING about a user in one call.
 
     Consolidates: profile, registration, wallets (internal + linked Web3),
