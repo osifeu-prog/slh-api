@@ -3580,13 +3580,25 @@ async def ai_spark_sync(req: AISparkSyncReq, request: Request):
 
 
 @app.get("/api/ai_spark/credits/{user_id}")
-async def ai_spark_credits(user_id: int):
+async def ai_spark_credits(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Public read: returns subscription state for Mini App widget.
 
     Currently no auth — returns minimal safe info. If we ever store secrets
     here (we shouldn't), gate with verify_miniapp_request. For now: tier +
     quota are not sensitive (the bot already shows them via /credits).
     """
+    _require_owner(
+        user_id,
+        authorization,
+        x_admin_key,
+        x_slh_service_token,
+        allow_service=True,
+    )
     if pool is None:
         raise HTTPException(503, "db pool not ready")
     async with pool.acquire() as conn:
