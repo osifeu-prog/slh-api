@@ -350,21 +350,25 @@ def _require_owner(
     authorization: str | None,
     x_admin_key: str | None = None,
     x_slh_service_token: str | None = None,
+    allow_service: bool = False,
 ) -> None:
-    """Require that the caller's verified uid matches claimed_uid (or is admin/service).
+    """Require that the caller's verified uid matches claimed_uid.
 
-    Read-only calls: service token is allowed (kind=service).
-    Writes: only user with matching uid, or admin.
+    Admin keys/JWTs always pass. Service tokens pass only if allow_service=True
+    (read-only operations). Mutations must use allow_service=False so the
+    service principal cannot act on behalf of a user.
     """
     ident = _auth_uid(authorization, x_admin_key, x_slh_service_token)
     kind = ident["kind"]
     uid = ident["uid"]
 
-    if kind in ("admin", "service"):
+    if kind == "admin":
+        return
+    if kind == "service" and allow_service:
         return
     if uid is not None and claimed_uid is not None and int(uid) == int(claimed_uid):
         return
-    print(f"[AUTH] ownership mismatch: caller={uid} claimed={claimed_uid}")
+    print(f"[AUTH] ownership mismatch: caller_kind={kind} caller={uid} claimed={claimed_uid}")
     if not AUTH_SHADOW:
         raise HTTPException(403, "Not authorized for this user")
 
@@ -3458,8 +3462,20 @@ class TransferRequest(BaseModel):
 
 
 @app.post("/api/transfer")
-async def transfer_tokens(req: TransferRequest):
-    """Transfer internal tokens between users"""
+async def transfer_tokens(
+    req: TransferRequest,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Transfer internal tokens between users (self-authorized only)."""
+    _require_owner(
+        req.from_user_id,
+        authorization,
+        x_admin_key,
+        x_slh_service_token,
+        allow_service=False,
+    )
     if req.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
     if req.token not in ("SLH", "ZVK", "MNH", "REP", "ZUZ"):
