@@ -4699,8 +4699,11 @@ async def wallet_send(
     req: WalletSendRequest,
     authorization: Optional[str] = Header(None),
     x_admin_override_zuz: Optional[str] = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
 ):
     user_id = get_current_user_id(authorization)
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
 
     if req.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
