@@ -4046,10 +4046,10 @@ async def community_create_post(body: CommunityPostCreate, tg_user: dict = Depen
     # Identity comes from the verified Telegram principal when authed.
     # Body values are accepted only in shadow mode (no verified principal).
     if authed:
-        effective_username = (tg_user.get("username") or "").strip()
         effective_telegram_id = str(tg_user["id"])
+        effective_username = (tg_user.get("username") or "").strip()
         if not effective_username:
-            effective_username = body.username.strip()
+            effective_username = f"tg_{effective_telegram_id}"
     else:
         effective_username = body.username.strip()
         effective_telegram_id = (body.telegram_id or None)
