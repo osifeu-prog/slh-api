@@ -2160,8 +2160,14 @@ def _decrypt_secret_xor(hex_str: str) -> str:
 
 
 @app.post("/api/cex/add-key")
-async def cex_add_api_key(req: CexApiKeyAdd):
+async def cex_add_api_key(
+    req: CexApiKeyAdd,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Link a Bybit or Binance API key (READ-ONLY only). Encrypted at rest."""
+    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     if req.exchange not in ("bybit", "binance"):
         raise HTTPException(400, "exchange must be 'bybit' or 'binance'")
     if len(req.api_key) < 8 or len(req.api_secret) < 8:
@@ -2193,8 +2199,14 @@ async def cex_add_api_key(req: CexApiKeyAdd):
 
 
 @app.get("/api/cex/keys/{user_id}")
-async def cex_list_keys(user_id: int):
+async def cex_list_keys(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """List CEX keys for a user (never returns secrets)."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         await _ensure_cex_keys_table(conn)
         rows = await conn.fetch("""
@@ -2208,8 +2220,15 @@ async def cex_list_keys(user_id: int):
 
 
 @app.delete("/api/cex/keys/{key_id}")
-async def cex_delete_key(key_id: int, user_id: int):
+async def cex_delete_key(
+    key_id: int,
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Remove a CEX API key."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     async with pool.acquire() as conn:
         await _ensure_cex_keys_table(conn)
         await conn.execute(
@@ -2286,13 +2305,19 @@ async def _binance_get_account(api_key: str, api_secret: str) -> dict:
 
 
 @app.post("/api/cex/sync/{key_id}")
-async def cex_sync_balances(key_id: int):
+async def cex_sync_balances(
+    key_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Fetch live balances from CEX and save as snapshot."""
     async with pool.acquire() as conn:
         await _ensure_cex_keys_table(conn)
         row = await conn.fetchrow("SELECT * FROM cex_api_keys WHERE id=$1 AND is_active=TRUE", key_id)
         if not row:
             raise HTTPException(404, "Key not found or inactive")
+        _require_owner(row["user_id"], authorization, x_admin_key, x_slh_service_token, allow_service=False)
 
         api_key = _decrypt_secret(row["api_key_encrypted"])
         api_secret = _decrypt_secret(row["api_secret_encrypted"])
@@ -2383,8 +2408,14 @@ async def cex_sync_balances(key_id: int):
 
 
 @app.get("/api/cex/portfolio/{user_id}")
-async def cex_portfolio(user_id: int):
+async def cex_portfolio(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Get the latest snapshot from all CEX accounts for this user."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         await _ensure_cex_keys_table(conn)
         # Get latest snapshot per exchange
