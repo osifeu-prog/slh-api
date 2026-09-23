@@ -3746,7 +3746,8 @@ async def register_referral(user_id: int = Query(...), referrer_id: int = Query(
 
 
 @app.get("/api/referral/tree/{user_id}")
-async def get_referral_tree(user_id: int, max_depth: int = Query(5, le=10)):
+async def get_referral_tree(user_id: int, max_depth: int = Query(5, le=10), authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     """Get the referral tree for a user (who they referred, and who those referred, etc.)"""
     async with pool.acquire() as conn:
         async def build_tree(uid: int, current_depth: int) -> dict:
@@ -3846,7 +3847,8 @@ async def referral_leaderboard(limit: int = Query(20, le=100)):
 
 
 @app.get("/api/referral/stats/{user_id}")
-async def referral_stats(user_id: int):
+async def referral_stats(user_id: int, authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     """Detailed referral statistics for a user"""
     async with pool.acquire() as conn:
         direct = await conn.fetchval("SELECT COUNT(*) FROM referrals WHERE referrer_id=$1", user_id) or 0
@@ -3894,7 +3896,8 @@ async def referral_stats(user_id: int):
 
 # === ACTIVITY FEED & TRANSACTION HISTORY ===
 @app.get("/api/activity/{user_id}")
-async def get_activity(user_id: int, limit: int = Query(30, le=100)):
+async def get_activity(user_id: int, limit: int = Query(30, le=100), authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     """Get user activity feed - combines all events into a timeline"""
     activities = []
     async with pool.acquire() as conn:
@@ -3994,7 +3997,8 @@ async def get_activity(user_id: int, limit: int = Query(30, le=100)):
 
 
 @app.get("/api/transactions/{user_id}")
-async def get_transactions(user_id: int, limit: int = Query(50, le=200), offset: int = Query(0)):
+async def get_transactions(user_id: int, limit: int = Query(50, le=200), offset: int = Query(0), authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     """Full transaction history with pagination"""
     txns = []
     async with pool.acquire() as conn:
