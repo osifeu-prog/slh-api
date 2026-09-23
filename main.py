@@ -279,7 +279,15 @@ def _require_admin(authorization: Optional[str] = None, admin_key_header: Option
 
 SELF_AUTH_ENFORCED = os.getenv("SELF_AUTH_ENFORCED", "0") == "1"
 
-def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str | None = None):
+SLH_SERVICE_TOKEN = os.getenv("SLH_SERVICE_TOKEN", "")
+
+def _is_service_principal(token):
+    if not SLH_SERVICE_TOKEN or not token:
+        return False
+    import hmac
+    return hmac.compare_digest(token, SLH_SERVICE_TOKEN)
+
+def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str | None = None, x_slh_service_token: str | None = None):
     """Caller must present a JWT for this telegram_id (admins pass through).
 
     While SELF_AUTH_ENFORCED is off this only logs, so nothing breaks.
