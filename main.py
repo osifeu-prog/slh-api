@@ -312,6 +312,63 @@ def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str 
     return ok
 
 
+# ── Ownership / identity for user-scoped routes ──
+AUTH_SHADOW = os.getenv("AUTH_SHADOW", "1") == "1"  # log-only by default
+
+
+def _auth_uid(
+    authorization: str | None = None,
+    x_admin_key: str | None = None,
+    x_slh_service_token: str | None = None,
+) -> dict:
+    """Resolve the caller identity from headers.
+
+    Returns {"uid": int|None, "kind": "user"|"admin"|"service"|"anon"}.
+    In AUTH_SHADOW=1, never raises; just logs and returns anon for callers
+    that would otherwise be blocked. Flip AUTH_SHADOW=0 to enforce.
+    """
+    if _is_service_principal(x_slh_service_token):
+        return {"uid": None, "kind": "service"}
+    if x_admin_key and x_admin_key in ADMIN_API_KEYS:
+        return {"uid": ADMIN_USER_ID, "kind": "admin"}
+    if authorization and authorization.startswith("Bearer ") and JWT_SECRET:
+        try:
+            payload = jwt.decode(authorization[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            uid = int(payload.get("user_id") or 0)
+            if uid:
+                return {"uid": uid, "kind": "admin" if uid == ADMIN_USER_ID else "user"}
+        except Exception:
+            pass
+    print("[AUTH] anonymous caller")
+    if not AUTH_SHADOW:
+        raise HTTPException(401, "Authentication required")
+    return {"uid": None, "kind": "anon"}
+
+
+def _require_owner(
+    claimed_uid: int | None,
+    authorization: str | None,
+    x_admin_key: str | None = None,
+    x_slh_service_token: str | None = None,
+) -> None:
+    """Require that the caller's verified uid matches claimed_uid (or is admin/service).
+
+    Read-only calls: service token is allowed (kind=service).
+    Writes: only user with matching uid, or admin.
+    """
+    ident = _auth_uid(authorization, x_admin_key, x_slh_service_token)
+    kind = ident["kind"]
+    uid = ident["uid"]
+
+    if kind in ("admin", "service"):
+        return
+    if uid is not None and claimed_uid is not None and int(uid) == int(claimed_uid):
+        return
+    print(f"[AUTH] ownership mismatch: caller={uid} claimed={claimed_uid}")
+    if not AUTH_SHADOW:
+        raise HTTPException(403, "Not authorized for this user")
+
+
 # ── Admin password hashing (SHA-256 + salt, no extra dependency) ──
 def hash_admin_password(password: str) -> str:
     salt = secrets.token_hex(16)
