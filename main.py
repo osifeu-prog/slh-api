@@ -4043,6 +4043,17 @@ async def community_create_post(body: CommunityPostCreate, tg_user: dict = Depen
     if not _check_community_rate(rate_key, 10):
         raise HTTPException(429, "Rate limit: max 10 posts per hour")
 
+    # Identity comes from the verified Telegram principal when authed.
+    # Body values are accepted only in shadow mode (no verified principal).
+    if authed:
+        effective_username = (tg_user.get("username") or "").strip()
+        effective_telegram_id = str(tg_user["id"])
+        if not effective_username:
+            effective_username = body.username.strip()
+    else:
+        effective_username = body.username.strip()
+        effective_telegram_id = (body.telegram_id or None)
+
     # Image validation: accept data URL only (frontend caps at 2MB), reject suspicious URLs
     image_data = body.image_data
     if image_data:
@@ -4054,7 +4065,7 @@ async def community_create_post(body: CommunityPostCreate, tg_user: dict = Depen
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO community_posts (username, telegram_id, text, category, image_data) VALUES ($1,$2,$3,$4,$5) RETURNING id, username, telegram_id, text, category, image_data, likes_count, created_at",
-            body.username.strip(), body.telegram_id, body.text.strip(), body.category, image_data
+            effective_username, effective_telegram_id, body.text.strip(), body.category, image_data
         )
         post = dict(row)
         post["created_at"] = post["created_at"].isoformat()
