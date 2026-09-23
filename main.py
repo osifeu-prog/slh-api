@@ -375,6 +375,37 @@ def _require_owner(
         raise HTTPException(403, "Not authorized for this user")
 
 
+@app.middleware("http")
+async def telegram_initdata_to_bearer(request: Request, call_next):
+    """Bridge verified Telegram WebApp initData into Bearer JWT auth."""
+    if (
+        not request.headers.get("authorization")
+        and request.headers.get("x-telegram-init-data")
+    ):
+        try:
+            from community_auth import verify_init_data
+            user=verify_init_data(
+                request.headers["x-telegram-init-data"]
+            )
+            if user and JWT_SECRET:
+                token=create_jwt(
+                    int(user["id"]),
+                    user.get("username")
+                )
+                new_headers=[
+                    (k,v)
+                    for k,v in request.scope["headers"]
+                    if k.lower()!=b"authorization"
+                ]
+                new_headers.append(
+                    (b"authorization",f"Bearer {token}".encode())
+                )
+                request.scope["headers"]=new_headers
+        except Exception as e:
+            print(f"[initdata-bridge] failed: {e!r}")
+    return await call_next(request)
+
+
 # ── Admin password hashing (SHA-256 + salt, no extra dependency) ──
 def hash_admin_password(password: str) -> str:
     salt = secrets.token_hex(16)
