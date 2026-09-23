@@ -4043,16 +4043,19 @@ async def community_create_post(body: CommunityPostCreate, tg_user: dict = Depen
     if not _check_community_rate(rate_key, 10):
         raise HTTPException(429, "Rate limit: max 10 posts per hour")
 
-    # Identity comes from the verified Telegram principal when authed.
-    # Body values are accepted only in shadow mode (no verified principal).
+    # Identity comes exclusively from the verified Telegram principal when authed.
+    # Body identity fields are used only in shadow mode, where no verified principal exists.
     if authed:
-        effective_username = (tg_user.get("username") or "").strip()
         effective_telegram_id = str(tg_user["id"])
+        effective_username = (tg_user.get("username") or "").strip()
         if not effective_username:
-            effective_username = body.username.strip()
+            effective_username = f"tg_{effective_telegram_id}"
     else:
         effective_username = body.username.strip()
-        effective_telegram_id = (body.telegram_id or None)
+        effective_telegram_id = body.telegram_id or None
+
+    if not effective_username:
+        raise HTTPException(400, "Username required")
 
     # Image validation: accept data URL only (frontend caps at 2MB), reject suspicious URLs
     image_data = body.image_data
