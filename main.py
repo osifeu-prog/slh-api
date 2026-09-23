@@ -5384,7 +5384,7 @@ async def marketplace_buy(
     x_admin_key: str = Header(None),
     x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
 ):
-    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
+    _require_owner(req.buyer_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     """Create an order for an approved marketplace item. Decrements stock atomically."""
     if req.quantity < 1:
         raise HTTPException(400, "Quantity must be at least 1")
