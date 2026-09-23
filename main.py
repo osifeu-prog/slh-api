@@ -3930,6 +3930,16 @@ app.router.on_startup.clear()
 app.add_event_handler("startup", _extended_startup)
 
 
+async def require_telegram_user(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
+    from community_auth import verify_init_data
+    user = verify_init_data(x_telegram_init_data or "")
+    if user:
+        return user
+    if os.getenv("COMMUNITY_AUTH_ENFORCE", "0") == "1":
+        raise HTTPException(401, "Telegram authentication required")
+    return {"id": 0, "username": None}
+
+
 class CommunityPostCreate(BaseModel):
     username: str
     text: str
@@ -4022,11 +4032,13 @@ async def community_get_posts(category: str = Query("all"), limit: int = Query(5
 
 
 @app.post("/api/community/posts")
-async def community_create_post(body: CommunityPostCreate):
+async def community_create_post(body: CommunityPostCreate, tg_user: dict = Depends(require_telegram_user)):
     """Create a new community post"""
     if not body.text.strip() or not body.username.strip():
         raise HTTPException(400, "Username and text required")
-    if not _check_community_rate(f"post:{body.username}", 10):
+    authed = bool(tg_user and tg_user.get("id"))
+    rate_key = f"post:tg:{tg_user['id']}" if authed else f"post:{body.username}"
+    if not _check_community_rate(rate_key, 10):
         raise HTTPException(429, "Rate limit: max 10 posts per hour")
 
     # Image validation: accept data URL only (frontend caps at 2MB), reject suspicious URLs
