@@ -3708,7 +3708,14 @@ async def distribute_referral_commissions(conn, from_user_id: int, amount: float
 
 
 @app.post("/api/referral/register")
-async def register_referral(user_id: int = Query(...), referrer_id: int = Query(None)):
+async def register_referral(
+    user_id: int = Query(...),
+    referrer_id: int = Query(None),
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     """Register a user in the referral system"""
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT * FROM referrals WHERE user_id=$1", user_id)
