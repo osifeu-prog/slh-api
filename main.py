@@ -1556,9 +1556,15 @@ async def _ensure_cashback_table(conn):
 
 
 @app.get("/api/cashback/{user_id}")
-async def get_cashback_status(user_id: int):
+async def get_cashback_status(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Return distribution count + cashback tiers earned for a user.
     All amounts are in ZVK (cashback token), NOT SLH."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         await _ensure_cashback_table(conn)
         verified_count = await conn.fetchval(
@@ -1586,8 +1592,7 @@ async def get_cashback_status(user_id: int):
     }
 
 
-@app.post("/api/cashback/process/{user_id}")
-async def process_cashback(user_id: int):
+async def _impl_process_cashback(user_id: int):
     """Recompute cashback tiers for a user based on their verified distributions.
     Credits in ZVK (NOT SLH). Idempotent â€” already-credited tiers won't be paid twice.
     """
@@ -1622,6 +1627,18 @@ async def process_cashback(user_id: int):
         "newly_credited": newly_credited,
         "total_credited": len(newly_credited),
     }
+
+
+@app.post("/api/cashback/process/{user_id}")
+async def process_cashback(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Route wrapper: verify ownership, then call impl. ZVK crediting — mutations reject service."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
+    return await _impl_process_cashback(user_id)
 
 
 # ============================================================
@@ -2714,7 +2731,7 @@ async def record_distribution(user_id: int, referred_user_id: int, verify: bool 
         """, user_id, referred_user_id, verify)
     if verify:
         # Process tiers immediately
-        return await process_cashback(user_id)
+        return await _impl_process_cashback(user_id)
     return {"ok": True, "user_id": user_id, "referred_user_id": referred_user_id, "verified": verify}
 
 
