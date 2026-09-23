@@ -3905,6 +3905,8 @@ async def _init_community_tables():
     """Create community tables and seed if empty. Called after pool is ready."""
     async with pool.acquire() as conn:
         await conn.execute(COMMUNITY_SCHEMA)
+        await conn.execute("ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS telegram_id TEXT")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_community_posts_telegram_id ON community_posts(telegram_id)")
         count = await conn.fetchval("SELECT count(*) FROM community_posts")
         if count == 0:
             for i, (uname, txt, cat, likes) in enumerate(COMMUNITY_SEEDS):
