@@ -291,7 +291,10 @@ def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str 
     """Caller must present a JWT for this telegram_id (admins pass through).
 
     While SELF_AUTH_ENFORCED is off this only logs, so nothing breaks.
+    The service principal (X-SLH-Service-Token) is always accepted.
     """
+    if _is_service_principal(x_slh_service_token):
+        return True
     ok = False
     if x_admin_key and x_admin_key in ADMIN_API_KEYS:
         ok = True
