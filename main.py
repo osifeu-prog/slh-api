@@ -2982,7 +2982,20 @@ class StakeRequest(BaseModel):
 
 
 @app.post("/api/staking/stake")
-async def create_stake(req: StakeRequest, x_admin_override_zuz: Optional[str] = Header(None)):
+async def create_stake(
+    req: StakeRequest,
+    x_admin_override_zuz: Optional[str] = Header(None),
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
+    _require_owner(
+        req.user_id,
+        authorization,
+        x_admin_key,
+        x_slh_service_token,
+        allow_service=False,
+    )
     """Create a new staking position.
     Supports TON, SLH, and BNB staking. Creates as 'pending_approval' for admin review."""
     plan = STAKING_PLANS.get(req.plan)
