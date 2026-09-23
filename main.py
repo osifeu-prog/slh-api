@@ -2803,8 +2803,14 @@ class LinkWalletRequest(BaseModel):
 
 
 @app.post("/api/user/link-wallet")
-async def link_wallet(req: LinkWalletRequest):
+async def link_wallet(
+    req: LinkWalletRequest,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Link a Web3 (BSC/ETH) wallet address to a web_users row.
+    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
 
     Validates the address format (0x + 40 hex chars) and stores it lowercase.
     Signature verification is optional â€” if present, we verify personal_sign.
@@ -2846,8 +2852,14 @@ async def link_wallet(req: LinkWalletRequest):
 
 
 @app.get("/api/user/wallet/{user_id}")
-async def get_linked_wallet(user_id: int):
+async def get_linked_wallet(
+    user_id: int,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Return the linked Web3 wallet address (if any) for a user."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT eth_wallet, eth_wallet_linked_at FROM web_users WHERE telegram_id=$1",
@@ -2863,8 +2875,14 @@ async def get_linked_wallet(user_id: int):
 
 
 @app.post("/api/user/unlink-wallet")
-async def unlink_wallet(req: LinkWalletRequest):
+async def unlink_wallet(
+    req: LinkWalletRequest,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Remove the linked Web3 wallet from a user row."""
+    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
     if not req.user_id:
         raise HTTPException(400, "user_id required")
     async with pool.acquire() as conn:
@@ -2885,8 +2903,14 @@ class ProfileUpdateRequest(BaseModel):
 
 
 @app.post("/api/user/profile")
-async def update_user_profile(req: ProfileUpdateRequest):
+async def update_user_profile(
+    req: ProfileUpdateRequest,
+    authorization: str = Header(None),
+    x_admin_key: str = Header(None),
+    x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
+):
     """Update user's custom profile fields (display_name, bio, language).
+    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
 
     These fields are SET BY THE USER and persist across Telegram re-authentication.
     Only non-None fields are updated â€” pass partial objects to avoid wiping.
