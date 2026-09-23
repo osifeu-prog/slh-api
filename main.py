@@ -2809,8 +2809,8 @@ async def get_user_balances(conn, user_id: int):
 
 # === USER PROFILE ===
 @app.get("/api/user/{telegram_id}")
-async def get_user(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None)):
-    _require_self(telegram_id, authorization, x_admin_key)
+async def get_user(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_self(telegram_id, authorization, x_admin_key, x_slh_service_token)
     """Get user profile and balances"""
     async with pool.acquire() as conn:
         # Try web_users first, fallback to users table
@@ -4696,8 +4696,8 @@ async def auth_bot_sync(req: BotSyncRequest):
 
 # === UNIFIED USER ENDPOINT (single call for everything) ===
 @app.get("/api/user/full/{telegram_id}")
-async def get_user_full(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None)):
-    _require_self(telegram_id, authorization, x_admin_key)
+async def get_user_full(telegram_id: int, authorization: str = Header(None), x_admin_key: str = Header(None), x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token")):
+    _require_self(telegram_id, authorization, x_admin_key, x_slh_service_token)
     """Return EVERYTHING about a user in one call.
 
     Consolidates: profile, registration, wallets (internal + linked Web3),
