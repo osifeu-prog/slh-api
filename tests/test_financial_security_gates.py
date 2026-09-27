@@ -93,6 +93,13 @@ def test_legacy_deposit_reads_require_owner():
     assert 'async def deposits_user_list(' in src
 
 
+def test_encryption_key_is_mandatory():
+    src = _read("main.py")
+    assert 'raw = os.getenv("ENCRYPTION_KEY", "").strip()' in src
+    assert 'key = os.getenv("ENCRYPTION_KEY", "").strip()' in src
+    assert 'slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026' not in src
+
+
 def test_no_hardcoded_runtime_secret_fallbacks():
     src = _read("main.py")
     assert 'BOT_SYNC_SECRET = os.getenv("BOT_SYNC_SECRET", "").strip()' in src
