@@ -1,14 +1,14 @@
 """
 SLH Payment Monitor — automatic BSC/TON ingestion.
 
-Polls Genesis wallets every POLL_INTERVAL seconds. When a new incoming
-transaction is found that is not yet recorded, tries to match it against
-pending_payment_intents (by user_id + approximate amount + time window).
-On match: grants premium, issues receipt, optionally notifies user via
-Telegram (if bot token set). On no match: stores as unmatched_deposit
-for manual review.
+Polls the configured settlement treasury every POLL_INTERVAL seconds.
+When a new incoming transaction is found, records it for operator review and
+optionally associates an open payment intent as metadata.
 
-Started from main.py startup event via start_monitor(pool).
+This monitor is detection-only: it never grants premium, credits balances,
+or settles payments. Canonical chain verifiers own settlement and idempotency.
+
+Started from main.py startup event via start_monitor().
 """
 from __future__ import annotations
 
