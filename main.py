@@ -277,7 +277,7 @@ def _require_admin(authorization: Optional[str] = None, admin_key_header: Option
 
     raise HTTPException(403, "Admin authentication required")
 
-SELF_AUTH_ENFORCED = os.getenv("SELF_AUTH_ENFORCED", "0") == "1"
+SELF_AUTH_ENFORCED = os.getenv("SELF_AUTH_ENFORCED", "1") == "1"
 
 SLH_SERVICE_TOKEN = os.getenv("SLH_SERVICE_TOKEN", "")
 
@@ -314,7 +314,7 @@ def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str 
 
 
 # ── Ownership / identity for user-scoped routes ──
-AUTH_SHADOW = os.getenv("AUTH_SHADOW", "1") == "1"  # log-only by default
+AUTH_SHADOW = os.getenv("AUTH_SHADOW", "0") == "1"  # legacy shadow mode; owner gates remain fail-closed
 
 
 def _auth_uid(
@@ -371,8 +371,9 @@ def _require_owner(
     if uid is not None and claimed_uid is not None and int(uid) == int(claimed_uid):
         return
     print(f"[AUTH] ownership mismatch: caller_kind={kind} caller={uid} claimed={claimed_uid}")
-    if not AUTH_SHADOW:
-        raise HTTPException(403, "Not authorized for this user")
+    # Financial/user-scoped ownership checks are always fail-closed.
+    # AUTH_SHADOW is retained only for legacy non-owner identity resolution.
+    raise HTTPException(403, "Not authorized for this user")
 
 
 @app.middleware("http")
@@ -2898,6 +2899,7 @@ async def link_wallet(
 
     if not req.user_id:
         raise HTTPException(400, "user_id required")
+    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
 
     async with pool.acquire() as conn:
         # Ensure user exists
@@ -4582,8 +4584,14 @@ async def get_slh_price():
 
 
 @app.get("/api/wallet/{user_id}")
-async def get_wallet(user_id: int):
-    """Get user wallet info: SLH balance, deposit addresses"""
+async def get_wallet(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+    x_slh_service_token: Optional[str] = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Get user wallet info: SLH balance, deposit addresses."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         # Get SLH balance from token_balances
         balance_row = await conn.fetchrow(
@@ -4608,8 +4616,14 @@ async def get_wallet(user_id: int):
 
 
 @app.get("/api/wallet/{user_id}/balances")
-async def get_wallet_balances(user_id: int):
-    """Get all token balances for a user"""
+async def get_wallet_balances(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+    x_slh_service_token: Optional[str] = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Get all token balances for a user."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT token, balance FROM token_balances WHERE user_id=$1",
@@ -4640,7 +4654,11 @@ async def record_deposit(
     x_admin_key: str = Header(None),
     x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
 ):
-    """Record a deposit and credit token_balances (self-authorized only)"""
+    """Direct client-supplied deposit credit is permanently disabled.
+
+    Deposits must be settled by a verified chain-specific authority; this endpoint
+    intentionally cannot turn a client-provided amount into internal balance.
+    """
     _require_owner(
         req.user_id,
         authorization,
@@ -4648,6 +4666,7 @@ async def record_deposit(
         x_slh_service_token,
         allow_service=False,
     )
+    raise HTTPException(410, "Direct deposit credit is disabled; use the verified chain settlement flow.")
     if req.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
     if not req.tx_hash.strip():
@@ -4703,8 +4722,16 @@ async def record_deposit(
 
 
 @app.get("/api/wallet/{user_id}/transactions")
-async def get_wallet_transactions(user_id: int, limit: int = Query(50, le=200), offset: int = Query(0)):
-    """Get transaction history from token_transfers for a user"""
+async def get_wallet_transactions(
+    user_id: int,
+    limit: int = Query(50, le=200),
+    offset: int = Query(0),
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+    x_slh_service_token: Optional[str] = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Get transaction history from token_transfers for a user."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT id, from_user_id, to_user_id, token, amount, memo, tx_type, created_at
