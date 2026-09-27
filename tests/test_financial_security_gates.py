@@ -33,6 +33,11 @@ def test_crypto_auto_settlement_defaults_closed():
     assert 'BSC_MIN_CONFIRMATIONS' in src
     assert 'TX sender does not match the user' in src
 
+def test_ton_minimum_is_server_authoritative():
+    src = _read("routes/payments_auto.py")
+    assert 'expected = max(PREMIUM_MIN_TON, float(req.expected_amount_ton or 0.0))' in src
+
+
 def test_bsc_minimum_is_server_authoritative():
     src = _read("routes/payments_auto.py")
     assert 'expected_min = max(PREMIUM_MIN_BNB, float(req.expected_min_bnb or 0.0))' in src
