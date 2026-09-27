@@ -1351,6 +1351,11 @@ async def registration_unlock(
     if not req.user_id:
         raise HTTPException(400, "user_id required")
 
+    # Admin method authenticates separately. All user-directed methods must
+    # bind the request to the authenticated Telegram/JWT identity.
+    if req.method != "admin":
+        _require_owner(req.user_id, authorization, x_admin_key, allow_service=False)
+
     async with pool.acquire() as conn:
         # Ensure user exists
         user = await conn.fetchrow(
@@ -8734,8 +8739,13 @@ class BankTransferReview(BaseModel):
     reason: Optional[str] = None
 
 @app.post("/api/bank-transfer/submit")
-async def submit_bank_transfer(req: BankTransferSubmit):
-    """Submit a bank transfer request with 8 required fields."""
+async def submit_bank_transfer(
+    req: BankTransferSubmit,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """Submit a bank transfer request with authenticated ownership."""
+    _require_owner(req.user_id, authorization, x_admin_key, allow_service=False)
     import re
     # Validate Israeli TZ
     if not validate_israeli_tz(req.id_number):
@@ -8786,8 +8796,13 @@ async def submit_bank_transfer(req: BankTransferSubmit):
         raise HTTPException(500, f"DB error: {str(e)}")
 
 @app.get("/api/bank-transfer/my-requests/{user_id}")
-async def my_bank_transfers(user_id: int):
-    """List user's bank transfer requests."""
+async def my_bank_transfers(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """List authenticated user's bank transfer requests."""
+    _require_owner(user_id, authorization, x_admin_key, allow_service=False)
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT id, customer_name, transaction_date, amount_ils,
@@ -10753,13 +10768,18 @@ async def deposits_create(
 
 
 @app.get("/api/deposits/{deposit_id}/status")
-async def deposits_status(deposit_id: int):
-    """Live deposit status with compound interest."""
+async def deposits_status(
+    deposit_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """Live deposit status with authenticated ownership."""
     async with pool.acquire() as conn:
         await _ensure_financial_tables(conn)
         d = await conn.fetchrow("SELECT * FROM deposits WHERE id=$1", deposit_id)
         if not d:
             raise HTTPException(404, "Deposit not found")
+        _require_owner(int(d["user_id"]), authorization, x_admin_key, allow_service=False)
         from datetime import datetime as dt
         deposited = d["deposited_at"]
         now = dt.now()
@@ -10794,7 +10814,12 @@ async def deposits_status(deposit_id: int):
 
 
 @app.get("/api/deposits/user/{user_id}")
-async def deposits_user_list(user_id: int):
+async def deposits_user_list(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    _require_owner(user_id, authorization, x_admin_key, allow_service=False)
     """All deposits for a specific user (with live compound interest).
 
     Two deposit schemas co-exist (legacy tx_hash-based + financial investment-
