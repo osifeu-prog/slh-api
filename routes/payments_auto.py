@@ -145,32 +145,93 @@ async def _ensure_payment_tables(conn):
             metadata JSONB DEFAULT '{}'::jsonb
         );
         CREATE INDEX IF NOT EXISTS idx_receipt_user ON payment_receipts(user_id);
+
+        CREATE TABLE IF NOT EXISTS payment_settlements (
+            id BIGSERIAL PRIMARY KEY,
+            chain TEXT NOT NULL,
+            tx_hash TEXT NOT NULL,
+            user_id BIGINT NOT NULL,
+            bot_name TEXT NOT NULL DEFAULT 'ecosystem',
+            plan_key TEXT NOT NULL DEFAULT 'premium',
+            amount NUMERIC(28,12) NOT NULL,
+            currency TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(chain, tx_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_payment_settlements_user
+            ON payment_settlements(user_id, created_at DESC);
         """
     )
 
 
-async def _grant_premium(conn, user_id: int, bot_name: str, tx_hash: str, amount: float, currency: str, plan_key: str) -> dict:
-    """Record deposit + flip premium to approved. Idempotent by tx_hash."""
-    existing = await conn.fetchval("SELECT id FROM deposits WHERE tx_hash = $1", tx_hash)
-    if existing:
-        return {"already_processed": True, "deposit_id": existing}
+async def _grant_premium(
+    conn,
+    user_id: int,
+    bot_name: str,
+    tx_hash: str,
+    amount: float,
+    currency: str,
+    plan_key: str,
+    *,
+    chain: Optional[str] = None,
+    source: str = "auto_verify",
+) -> dict:
+    """Atomically settle a verified payment with DB-backed idempotency."""
+    settlement_chain = (chain or currency or "unknown").strip().lower()
+    settlement_source = (source or "auto_verify").strip().lower()
 
-    dep_id = await conn.fetchval(
-        """
-        INSERT INTO deposits (user_id, amount, currency, tx_hash, status, plan_key)
-        VALUES ($1, $2, $3, $4, 'approved', $5) RETURNING id
-        """,
-        user_id, amount, currency, tx_hash, plan_key,
-    )
-    await conn.execute(
-        """
-        INSERT INTO premium_users (user_id, bot_name, payment_status)
-        VALUES ($1, $2, 'approved')
-        ON CONFLICT (user_id, bot_name) DO UPDATE SET payment_status = 'approved'
-        """,
-        user_id, bot_name,
-    )
-    return {"deposit_id": dep_id, "already_processed": False}
+    async with conn.transaction():
+        settlement_id = await conn.fetchval(
+            """
+            INSERT INTO payment_settlements
+                (chain, tx_hash, user_id, bot_name, plan_key, amount, currency, source)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            ON CONFLICT (chain, tx_hash) DO NOTHING
+            RETURNING id
+            """,
+            settlement_chain, tx_hash, user_id, bot_name, plan_key,
+            amount, currency.upper(), settlement_source,
+        )
+        if settlement_id is None:
+            existing = await conn.fetchrow(
+                """
+                SELECT id, user_id, amount, currency
+                  FROM payment_settlements
+                 WHERE chain=$1 AND tx_hash=$2
+                """,
+                settlement_chain, tx_hash,
+            )
+            if not existing:
+                raise HTTPException(409, "Settlement idempotency check failed")
+            if int(existing["user_id"]) != int(user_id):
+                raise HTTPException(409, "Transaction is already settled for another user")
+            return {
+                "already_processed": True,
+                "settlement_id": existing["id"],
+            }
+
+        dep_id = await conn.fetchval(
+            """
+            INSERT INTO deposits (user_id, amount, currency, tx_hash, status, plan_key)
+            VALUES ($1, $2, $3, $4, 'approved', $5) RETURNING id
+            """,
+            user_id, amount, currency, tx_hash, plan_key,
+        )
+        await conn.execute(
+            """
+            INSERT INTO premium_users (user_id, bot_name, payment_status)
+            VALUES ($1, $2, 'approved')
+            ON CONFLICT (user_id, bot_name) DO UPDATE SET payment_status = 'approved'
+            """,
+            user_id, bot_name,
+        )
+
+    return {
+        "settlement_id": settlement_id,
+        "deposit_id": dep_id,
+        "already_processed": False,
+    }
 
 
 async def _issue_receipt(conn, user_id: int, source_type: str, source_id: int, amount: float, currency: str, tokens_granted: float = 0, tokens_currency: str = "SLH") -> dict:
@@ -295,7 +356,10 @@ async def ton_auto_verify(req: TonVerifyReq, request: Request):
 
     async with _pool.acquire() as conn:
         await _ensure_payment_tables(conn)
-        result = await _grant_premium(conn, req.user_id, req.bot_name, tx_hash, amount_ton, "TON", req.plan_key)
+        result = await _grant_premium(
+            conn, req.user_id, req.bot_name, tx_hash, amount_ton, "TON", req.plan_key,
+            chain="ton", source="ton_auto_verify",
+        )
         receipt = None
         if req.issue_receipt and not result.get("already_processed"):
             receipt = await _issue_receipt(conn, req.user_id, "ton_deposit", result.get("deposit_id"), amount_ton, "TON")
@@ -444,7 +508,10 @@ async def bsc_auto_verify(req: BscVerifyReq, request: Request):
 
     async with _pool.acquire() as conn:
         await _ensure_payment_tables(conn)
-        result = await _grant_premium(conn, req.user_id, req.bot_name, tx_hash, value_bnb, "BNB", req.plan_key)
+        result = await _grant_premium(
+            conn, req.user_id, req.bot_name, tx_hash, value_bnb, "BNB", req.plan_key,
+            chain="bsc", source="bsc_auto_verify",
+        )
         rcpt = None
         if req.issue_receipt and not result.get("already_processed"):
             rcpt = await _issue_receipt(conn, req.user_id, "bsc_deposit", result.get("deposit_id"), value_bnb, "BNB")
