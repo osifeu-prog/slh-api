@@ -159,6 +159,7 @@ async def _match_and_ingest(conn, chain: str, deposit: dict) -> Optional[dict]:
         result = await _grant_premium(
             conn, intent["user_id"], intent["bot_name"], tx_hash, amount,
             "BNB" if chain == "bsc" else "TON", intent["plan_key"],
+            chain=chain, source="payment_monitor",
         )
         rcpt = None
         if not result.get("already_processed"):
