@@ -336,7 +336,7 @@ async def bsc_auto_verify(req: BscVerifyReq, request: Request):
     if not tx_hash.startswith("0x") or len(tx_hash) != 66:
         raise HTTPException(400, "invalid BSC tx_hash (expected 0x + 64 hex)")
 
-    expected_min = req.expected_min_bnb or PREMIUM_MIN_BNB
+    expected_min = max(PREMIUM_MIN_BNB, float(req.expected_min_bnb or 0.0))
     # BSC public RPC (free, no key needed).
     if IS_TESTNET:
         # BSC Testnet (Chapel) — free tBNB at https://testnet.binance.org/faucet-smart
@@ -422,6 +422,8 @@ async def bsc_auto_verify(req: BscVerifyReq, request: Request):
         raise HTTPException(400, "TX recipient does not match the configured BSC settlement treasury")
 
     from_addr = (tx.get("from") or "").lower()
+    if _pool is None:
+        raise HTTPException(500, "db pool not initialized")
     async with _pool.acquire() as conn:
         bound_wallet = await conn.fetchval(
             "SELECT eth_wallet FROM web_users WHERE telegram_id=$1",
