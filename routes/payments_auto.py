@@ -33,9 +33,7 @@ from routes.treasury import record_revenue_internal as _record_revenue
 router = APIRouter(prefix="/api/payment", tags=["Payments"])
 
 TON_PAY_ADDRESS = os.getenv("TON_PAY_ADDRESS", "").strip()
-BSC_GENESIS_ADDRESS = os.getenv(
-    "BSC_GENESIS_ADDRESS", "0xd061de73B06d5E91bfA46b35EfB7B08b16903da4"
-).lower()
+BSC_GENESIS_ADDRESS = os.getenv("BSC_GENESIS_ADDRESS", "").strip().lower()
 BSCSCAN_API_KEY = os.getenv("BSCSCAN_API_KEY", "").strip()
 TONCENTER_API_KEY = os.getenv("TONCENTER_API_KEY", "").strip()
 PREMIUM_MIN_BNB = float(os.getenv("PREMIUM_MIN_BNB", "0.0005"))  # ~$0.30 at BNB=$633
@@ -56,6 +54,34 @@ if IS_TESTNET:
 
 # Pool is injected by main.py via set_pool()
 _pool = None
+
+# Crypto auto-settlement stays OFF until the canonical on-chain settlement
+# contract is explicitly enabled after end-to-end verification.
+CRYPTO_AUTO_VERIFY_ENABLED = os.getenv("CRYPTO_AUTO_VERIFY_ENABLED", "0") == "1"
+BSC_EXPECTED_CHAIN_ID = int(os.getenv("BSC_CHAIN_ID", "97" if IS_TESTNET else "56"))
+BSC_MIN_CONFIRMATIONS = int(os.getenv("BSC_MIN_CONFIRMATIONS", "15"))
+
+
+def _require_user_owner(request: Request, user_id: int) -> None:
+    from main import _require_owner
+    _require_owner(
+        user_id,
+        request.headers.get("authorization"),
+        request.headers.get("x-admin-key"),
+        request.headers.get("x-slh-service-token"),
+        allow_service=False,
+    )
+
+
+def _require_trusted_payment_writer(request: Request) -> None:
+    from main import _is_service_principal, _require_admin
+    service_token = request.headers.get("x-slh-service-token")
+    if _is_service_principal(service_token):
+        return
+    _require_admin(
+        request.headers.get("authorization"),
+        request.headers.get("x-admin-key"),
+    )
 
 
 def set_pool(pool):
@@ -218,6 +244,9 @@ class TonVerifyReq(BaseModel):
 
 @router.post("/ton/auto-verify")
 async def ton_auto_verify(req: TonVerifyReq, request: Request):
+    _require_user_owner(request, req.user_id)
+    if not CRYPTO_AUTO_VERIFY_ENABLED:
+        raise HTTPException(503, "Crypto auto-settlement is disabled until canonical settlement is enabled")
     if not TON_PAY_ADDRESS:
         raise HTTPException(503, "TON_PAY_ADDRESS env var not configured")
 
@@ -298,6 +327,11 @@ class BscVerifyReq(BaseModel):
 
 @router.post("/bsc/auto-verify")
 async def bsc_auto_verify(req: BscVerifyReq, request: Request):
+    _require_user_owner(request, req.user_id)
+    if not CRYPTO_AUTO_VERIFY_ENABLED:
+        raise HTTPException(503, "Crypto auto-settlement is disabled until canonical settlement is enabled")
+    if not BSC_GENESIS_ADDRESS:
+        raise HTTPException(503, "BSC settlement treasury is not configured")
     tx_hash = (req.tx_hash or "").strip()
     if not tx_hash.startswith("0x") or len(tx_hash) != 66:
         raise HTTPException(400, "invalid BSC tx_hash (expected 0x + 64 hex)")
@@ -332,7 +366,13 @@ async def bsc_auto_verify(req: BscVerifyReq, request: Request):
                 try:
                     tx_resp = await _rpc_call(session, rpc, "eth_getTransactionByHash", [tx_hash])
                     rc_resp = await _rpc_call(session, rpc, "eth_getTransactionReceipt", [tx_hash])
-                    tx_data = {"result": tx_resp.get("result")}
+                    chain_resp = await _rpc_call(session, rpc, "eth_chainId", [])
+                    latest_resp = await _rpc_call(session, rpc, "eth_blockNumber", [])
+                    tx_data = {
+                        "result": tx_resp.get("result"),
+                        "chain_id": chain_resp.get("result"),
+                        "latest_block": latest_resp.get("result"),
+                    }
                     rc_data = {"result": rc_resp.get("result")}
                     break
                 except Exception as e:
@@ -355,6 +395,23 @@ async def bsc_auto_verify(req: BscVerifyReq, request: Request):
     if receipt_raw.get("status") != "0x1":
         raise HTTPException(400, "TX failed on-chain")
 
+    chain_raw = tx_data.get("chain_id")
+    try:
+        chain_id = int(chain_raw, 16) if isinstance(chain_raw, str) else int(chain_raw or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(502, "BSC RPC returned malformed chain id")
+    if chain_id != BSC_EXPECTED_CHAIN_ID:
+        raise HTTPException(400, f"wrong BSC chain id: got {chain_id}, expected {BSC_EXPECTED_CHAIN_ID}")
+
+    try:
+        receipt_block = int(receipt_raw.get("blockNumber", "0x0"), 16)
+        latest_block = int(tx_data.get("latest_block", "0x0"), 16)
+    except (TypeError, ValueError):
+        raise HTTPException(502, "BSC RPC returned malformed block number")
+    confirmations = max(0, latest_block - receipt_block + 1)
+    if confirmations < BSC_MIN_CONFIRMATIONS:
+        raise HTTPException(400, f"TX not sufficiently confirmed: {confirmations}/{BSC_MIN_CONFIRMATIONS}")
+
     to_addr = (tx.get("to") or "").lower()
     try:
         value_bnb = int(tx.get("value", "0x0"), 16) / 1e18
@@ -362,7 +419,18 @@ async def bsc_auto_verify(req: BscVerifyReq, request: Request):
         raise HTTPException(502, "bscscan returned malformed value")
 
     if to_addr != BSC_GENESIS_ADDRESS:
-        raise HTTPException(400, f"TX was sent to {to_addr}, not to Genesis {BSC_GENESIS_ADDRESS}")
+        raise HTTPException(400, "TX recipient does not match the configured BSC settlement treasury")
+
+    from_addr = (tx.get("from") or "").lower()
+    async with _pool.acquire() as conn:
+        bound_wallet = await conn.fetchval(
+            "SELECT eth_wallet FROM web_users WHERE telegram_id=$1",
+            req.user_id,
+        )
+    if not bound_wallet:
+        raise HTTPException(409, "No verified BSC/ETH wallet is bound to this user")
+    if from_addr != str(bound_wallet).lower():
+        raise HTTPException(403, "TX sender does not match the user's bound wallet")
 
     BSC_ABS_TOLERANCE = 0.00002
     min_acceptable = max(0.0, expected_min - BSC_ABS_TOLERANCE)
@@ -416,6 +484,7 @@ SUPPORTED_PROVIDERS = {"stripe", "paypal", "growclub", "icount", "isracard", "ca
 
 @router.post("/external/record")
 async def external_payment_record(req: ExternalPaymentRecord, request: Request):
+    _require_trusted_payment_writer(request)
     provider = req.provider.lower().strip()
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(400, f"unsupported provider '{provider}'. allowed: {sorted(SUPPORTED_PROVIDERS)}")
@@ -478,7 +547,10 @@ async def external_payment_record(req: ExternalPaymentRecord, request: Request):
 # ============================================================
 
 @router.get("/status/{user_id}")
-async def payment_status(user_id: int, bot_name: str = "ecosystem"):
+async def payment_status(user_id: int, bot_name: str = "ecosystem", request: Request = None):
+    if request is None:
+        raise HTTPException(401, "Authentication required")
+    _require_user_owner(request, user_id)
     if _pool is None:
         raise HTTPException(500, "db pool not initialized")
     async with _pool.acquire() as conn:
@@ -600,7 +672,10 @@ async def payment_geography(x_admin_key: Optional[str] = Header(None)):
 
 
 @router.get("/receipts/{user_id}")
-async def user_receipts(user_id: int, limit: int = 50):
+async def user_receipts(user_id: int, limit: int = 50, request: Request = None):
+    if request is None:
+        raise HTTPException(401, "Authentication required")
+    _require_user_owner(request, user_id)
     if _pool is None:
         raise HTTPException(500, "db pool not initialized")
     async with _pool.acquire() as conn:
