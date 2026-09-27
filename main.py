@@ -148,7 +148,7 @@ from routes.admin_rotate import (
 from wellness_scheduler import init_wellness_scheduler, get_wellness_scheduler
 
 # === CONFIG ===
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:slh_secure_2026@localhost:5432/slh_main")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 BOT_TOKEN = os.getenv("EXPERTNET_BOT_TOKEN", "")
 # Broadcast bot â€” @SLH_AIR_bot is the main user-facing bot
 BROADCAST_BOT_TOKEN = os.getenv("SLH_AIR_TOKEN") or os.getenv("CORE_BOT_TOKEN") or os.getenv("AIRDROP_BOT_TOKEN", "")
@@ -277,7 +277,7 @@ def _require_admin(authorization: Optional[str] = None, admin_key_header: Option
 
     raise HTTPException(403, "Admin authentication required")
 
-SELF_AUTH_ENFORCED = os.getenv("SELF_AUTH_ENFORCED", "0") == "1"
+SELF_AUTH_ENFORCED = os.getenv("SELF_AUTH_ENFORCED", "1") == "1"
 
 SLH_SERVICE_TOKEN = os.getenv("SLH_SERVICE_TOKEN", "")
 
@@ -314,7 +314,7 @@ def _require_self(telegram_id: int, authorization: str | None, x_admin_key: str 
 
 
 # ── Ownership / identity for user-scoped routes ──
-AUTH_SHADOW = os.getenv("AUTH_SHADOW", "1") == "1"  # log-only by default
+AUTH_SHADOW = os.getenv("AUTH_SHADOW", "0") == "1"  # legacy shadow mode; owner gates remain fail-closed
 
 
 def _auth_uid(
@@ -371,8 +371,9 @@ def _require_owner(
     if uid is not None and claimed_uid is not None and int(uid) == int(claimed_uid):
         return
     print(f"[AUTH] ownership mismatch: caller_kind={kind} caller={uid} claimed={claimed_uid}")
-    if not AUTH_SHADOW:
-        raise HTTPException(403, "Not authorized for this user")
+    # Financial/user-scoped ownership checks are always fail-closed.
+    # AUTH_SHADOW is retained only for legacy non-owner identity resolution.
+    raise HTTPException(403, "Not authorized for this user")
 
 
 @app.middleware("http")
@@ -395,37 +396,6 @@ async def telegram_initdata_to_bearer(request: Request, call_next):
                 ]
                 new_headers.append((b"authorization", ("Bearer " + token).encode()))
                 request.scope["headers"] = new_headers
-        except Exception as e:
-            print(f"[initdata-bridge] failed: {e!r}")
-    return await call_next(request)
-
-
-@app.middleware("http")
-async def telegram_initdata_to_bearer(request: Request, call_next):
-    """Bridge verified Telegram WebApp initData into Bearer JWT auth."""
-    if (
-        not request.headers.get("authorization")
-        and request.headers.get("x-telegram-init-data")
-    ):
-        try:
-            from community_auth import verify_init_data
-            user=verify_init_data(
-                request.headers["x-telegram-init-data"]
-            )
-            if user and JWT_SECRET:
-                token=create_jwt(
-                    int(user["id"]),
-                    user.get("username")
-                )
-                new_headers=[
-                    (k,v)
-                    for k,v in request.scope["headers"]
-                    if k.lower()!=b"authorization"
-                ]
-                new_headers.append(
-                    (b"authorization",f"Bearer {token}".encode())
-                )
-                request.scope["headers"]=new_headers
         except Exception as e:
             print(f"[initdata-bridge] failed: {e!r}")
     return await call_next(request)
@@ -525,14 +495,14 @@ async def startup():
     global pool
     # SECURITY CHECK (C-3): warn if any default credentials are still in use
     _security_warnings = []
-    if DATABASE_URL == "postgresql://postgres:slh_secure_2026@localhost:5432/slh_main":
-        _security_warnings.append("DATABASE_URL using default â€” set on Railway")
-    if os.getenv("ADMIN_API_KEY", "slh_admin_2026") == "slh_admin_2026":
-        _security_warnings.append("ADMIN_API_KEY is default â€” set on Railway")
-    if os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026") == "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026":
-        _security_warnings.append("ENCRYPTION_KEY is default â€” CRITICAL: set on Railway before storing real CEX keys!")
-    if os.getenv("ADMIN_BROADCAST_KEY", "slh-broadcast-2026-change-me") == "slh-broadcast-2026-change-me":
-        _security_warnings.append("ADMIN_BROADCAST_KEY is default â€” set on Railway")
+    if not DATABASE_URL:
+        _security_warnings.append("DATABASE_URL not set â€” database startup unavailable")
+    if not os.getenv("ADMIN_API_KEY", "").strip():
+        _security_warnings.append("ADMIN_API_KEY not set â€” legacy admin-key fallback disabled")
+    if not os.getenv("ENCRYPTION_KEY", "").strip():
+        _security_warnings.append("ENCRYPTION_KEY not set â€” secret encryption unavailable")
+    if not os.getenv("ADMIN_BROADCAST_KEY", "").strip():
+        _security_warnings.append("ADMIN_BROADCAST_KEY not set â€” broadcast authentication unavailable")
     if not os.getenv("JWT_SECRET"):
         _security_warnings.append("JWT_SECRET not set â€” JWT auth will be unreliable")
     for w in _security_warnings:
@@ -1349,6 +1319,11 @@ async def registration_unlock(
     """
     if not req.user_id:
         raise HTTPException(400, "user_id required")
+
+    # Admin method authenticates separately. All user-directed methods must
+    # bind the request to the authenticated Telegram/JWT identity.
+    if req.method != "admin":
+        _require_owner(req.user_id, authorization, x_admin_key, allow_service=False)
 
     async with pool.acquire() as conn:
         # Ensure user exists
@@ -2213,10 +2188,10 @@ async def _ensure_cex_keys_table(conn):
 
 
 def _get_encryption_key() -> bytes:
-    """Derive a 32-byte AES-GCM key from ENCRYPTION_KEY env var via SHA-256.
-    Accepts any length input â€” hashes to produce a stable 256-bit key.
-    """
-    raw = os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026")
+    """Derive a 32-byte AES-GCM key from the mandatory ENCRYPTION_KEY env var."""
+    raw = os.getenv("ENCRYPTION_KEY", "").strip()
+    if not raw:
+        raise RuntimeError("ENCRYPTION_KEY is required for secret encryption")
     return hashlib.sha256(raw.encode("utf-8")).digest()
 
 
@@ -2265,7 +2240,9 @@ def _decrypt_secret(blob: str) -> str:
 
 def _encrypt_secret_xor(secret: str) -> str:
     """LEGACY v1 XOR encryption â€” kept only for backwards compat / fallback."""
-    key = os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026")
+    key = os.getenv("ENCRYPTION_KEY", "").strip()
+    if not key:
+        raise RuntimeError("ENCRYPTION_KEY is required for legacy secret encryption")
     result = []
     for i, c in enumerate(secret):
         result.append(chr(ord(c) ^ ord(key[i % len(key)])))
@@ -2276,7 +2253,9 @@ def _decrypt_secret_xor(hex_str: str) -> str:
     """LEGACY v1 XOR decryption â€” called automatically by _decrypt_secret for old data."""
     try:
         encrypted = bytes.fromhex(hex_str).decode("latin-1")
-        key = os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026")
+        key = os.getenv("ENCRYPTION_KEY", "").strip()
+        if not key:
+            raise RuntimeError("ENCRYPTION_KEY is required for legacy secret decryption")
         result = []
         for i, c in enumerate(encrypted):
             result.append(chr(ord(c) ^ ord(key[i % len(key)])))
@@ -2898,6 +2877,7 @@ async def link_wallet(
 
     if not req.user_id:
         raise HTTPException(400, "user_id required")
+    _require_owner(req.user_id, authorization, x_admin_key, x_slh_service_token, allow_service=False)
 
     async with pool.acquire() as conn:
         # Ensure user exists
@@ -4582,8 +4562,14 @@ async def get_slh_price():
 
 
 @app.get("/api/wallet/{user_id}")
-async def get_wallet(user_id: int):
-    """Get user wallet info: SLH balance, deposit addresses"""
+async def get_wallet(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+    x_slh_service_token: Optional[str] = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Get user wallet info: SLH balance, deposit addresses."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         # Get SLH balance from token_balances
         balance_row = await conn.fetchrow(
@@ -4608,8 +4594,14 @@ async def get_wallet(user_id: int):
 
 
 @app.get("/api/wallet/{user_id}/balances")
-async def get_wallet_balances(user_id: int):
-    """Get all token balances for a user"""
+async def get_wallet_balances(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+    x_slh_service_token: Optional[str] = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Get all token balances for a user."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT token, balance FROM token_balances WHERE user_id=$1",
@@ -4640,7 +4632,11 @@ async def record_deposit(
     x_admin_key: str = Header(None),
     x_slh_service_token: str = Header(None, alias="X-SLH-Service-Token"),
 ):
-    """Record a deposit and credit token_balances (self-authorized only)"""
+    """Direct client-supplied deposit credit is permanently disabled.
+
+    Deposits must be settled by a verified chain-specific authority; this endpoint
+    intentionally cannot turn a client-provided amount into internal balance.
+    """
     _require_owner(
         req.user_id,
         authorization,
@@ -4648,6 +4644,7 @@ async def record_deposit(
         x_slh_service_token,
         allow_service=False,
     )
+    raise HTTPException(410, "Direct deposit credit is disabled; use the verified chain settlement flow.")
     if req.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
     if not req.tx_hash.strip():
@@ -4703,8 +4700,16 @@ async def record_deposit(
 
 
 @app.get("/api/wallet/{user_id}/transactions")
-async def get_wallet_transactions(user_id: int, limit: int = Query(50, le=200), offset: int = Query(0)):
-    """Get transaction history from token_transfers for a user"""
+async def get_wallet_transactions(
+    user_id: int,
+    limit: int = Query(50, le=200),
+    offset: int = Query(0),
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+    x_slh_service_token: Optional[str] = Header(None, alias="X-SLH-Service-Token"),
+):
+    """Get transaction history from token_transfers for a user."""
+    _require_owner(user_id, authorization, x_admin_key, x_slh_service_token, allow_service=True)
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT id, from_user_id, to_user_id, token, amount, memo, tx_type, created_at
@@ -4988,7 +4993,7 @@ class BotSyncRequest(BaseModel):
     bot_secret: str  # required to prevent anyone from creating users via this endpoint
 
 
-BOT_SYNC_SECRET = os.getenv("BOT_SYNC_SECRET", "slh-bot-sync-2026-default-please-override")
+BOT_SYNC_SECRET = os.getenv("BOT_SYNC_SECRET", "").strip()
 
 
 @app.post("/api/auth/bot-sync")
@@ -6115,7 +6120,7 @@ async def _tg_send_message(bot_token: str, chat_id: int, text: str, parse_mode: 
         return {"ok": False, "error": str(e)[:200]}
 
 
-ADMIN_BROADCAST_KEY = os.getenv("ADMIN_BROADCAST_KEY", "slh-broadcast-2026-change-me")
+ADMIN_BROADCAST_KEY = os.getenv("ADMIN_BROADCAST_KEY", "").strip()
 
 
 @app.post("/api/broadcast/send")
@@ -8707,8 +8712,13 @@ class BankTransferReview(BaseModel):
     reason: Optional[str] = None
 
 @app.post("/api/bank-transfer/submit")
-async def submit_bank_transfer(req: BankTransferSubmit):
-    """Submit a bank transfer request with 8 required fields."""
+async def submit_bank_transfer(
+    req: BankTransferSubmit,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """Submit a bank transfer request with authenticated ownership."""
+    _require_owner(req.user_id, authorization, x_admin_key, allow_service=False)
     import re
     # Validate Israeli TZ
     if not validate_israeli_tz(req.id_number):
@@ -8759,8 +8769,13 @@ async def submit_bank_transfer(req: BankTransferSubmit):
         raise HTTPException(500, f"DB error: {str(e)}")
 
 @app.get("/api/bank-transfer/my-requests/{user_id}")
-async def my_bank_transfers(user_id: int):
-    """List user's bank transfer requests."""
+async def my_bank_transfers(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """List authenticated user's bank transfer requests."""
+    _require_owner(user_id, authorization, x_admin_key, allow_service=False)
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT id, customer_name, transaction_date, amount_ils,
@@ -10726,13 +10741,18 @@ async def deposits_create(
 
 
 @app.get("/api/deposits/{deposit_id}/status")
-async def deposits_status(deposit_id: int):
-    """Live deposit status with compound interest."""
+async def deposits_status(
+    deposit_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """Live deposit status with authenticated ownership."""
     async with pool.acquire() as conn:
         await _ensure_financial_tables(conn)
         d = await conn.fetchrow("SELECT * FROM deposits WHERE id=$1", deposit_id)
         if not d:
             raise HTTPException(404, "Deposit not found")
+        _require_owner(int(d["user_id"]), authorization, x_admin_key, allow_service=False)
         from datetime import datetime as dt
         deposited = d["deposited_at"]
         now = dt.now()
@@ -10767,7 +10787,12 @@ async def deposits_status(deposit_id: int):
 
 
 @app.get("/api/deposits/user/{user_id}")
-async def deposits_user_list(user_id: int):
+async def deposits_user_list(
+    user_id: int,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    _require_owner(user_id, authorization, x_admin_key, allow_service=False)
     """All deposits for a specific user (with live compound interest).
 
     Two deposit schemas co-exist (legacy tx_hash-based + financial investment-
@@ -11006,8 +11031,15 @@ class CreditCardReq(BaseModel):
 
 
 @app.post("/api/payment/credit-card/submit")
-async def card_payment_submit(req: CreditCardReq):
-    """Submit a credit card payment request. Actual charging happens via provider integration (future)."""
+async def card_payment_submit(
+    req: CreditCardReq,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """Submit a credit card payment request for an authenticated user."""
+    if not req.user_id:
+        raise HTTPException(400, "user_id is required")
+    _require_owner(req.user_id, authorization, x_admin_key, allow_service=False)
     if req.amount_ils < 1 or req.amount_ils > 50000:
         raise HTTPException(400, "Amount must be between ₪1 and ₪50,000")
     if not req.card_last4 or len(req.card_last4) != 4 or not req.card_last4.isdigit():
@@ -11679,10 +11711,9 @@ async def devices_list_admin(
 
 
 # ===== OPS REALITY ENDPOINT — auth via ADMIN_BROADCAST_KEY =====
-# Osif's "single source of truth" admin snapshot. Accepts ADMIN_BROADCAST_KEY
-# (default: slh-broadcast-2026-change-me) because ADMIN_API_KEYS is often
-# empty on Railway (chicken-and-egg with rotation). Read-only; no mutations.
-# Used by /admin/reality.html to give Osif real control without phantom data.
+# Osif's "single source of truth" admin snapshot. Requires the configured
+# ADMIN_BROADCAST_KEY. Read-only; no mutations.
+# Used by /admin/reality.html to give Osif a controlled operational snapshot.
 
 @app.get("/api/ops/reality")
 async def ops_reality(x_broadcast_key: Optional[str] = Header(None)):

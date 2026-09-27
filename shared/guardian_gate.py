@@ -61,10 +61,13 @@ async def check_zuz(pool, user_id: int, *, bypass_cache: bool = False) -> dict:
                 user_id
             )
     except Exception as e:
-        # DB error or table missing — fail OPEN (don't block legitimate traffic)
-        print(f"[guardian_gate][WARN] DB check failed for {user_id}: {e!r}")
-        return {"blocked": False, "warn": False, "zuz_score": 0.0,
-                "reason": "db unavailable", "reason_he": ""}
+        # Transaction authorization is fail-closed: an unavailable Guardian
+        # must never be treated as a clean account on a money-moving path.
+        print(f"[guardian_gate][ERROR] DB check failed for {user_id}: {e!r}")
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "guardian_unavailable", "reason": "Guardian check unavailable"},
+        )
 
     if not row:
         result = {"blocked": False, "warn": False, "zuz_score": 0.0,
@@ -91,9 +94,9 @@ async def check_zuz(pool, user_id: int, *, bypass_cache: bool = False) -> dict:
 
 async def require_clean_zuz(pool, user_id: int, *, admin_override_header: Optional[str] = None) -> None:
     """FastAPI-friendly: raises 403 HTTPException if blocked."""
-    if admin_override_header:
-        # X-Admin-Override-ZUZ header set — skip gate. Caller must have verified admin.
-        return
+    # Caller-supplied override headers are never trusted here. Administrative
+    # authorization belongs at the endpoint boundary; Guardian remains a
+    # mandatory safety check for every transaction path.
     status = await check_zuz(pool, user_id)
     if status["blocked"]:
         raise HTTPException(
