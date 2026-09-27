@@ -148,7 +148,7 @@ from routes.admin_rotate import (
 from wellness_scheduler import init_wellness_scheduler, get_wellness_scheduler
 
 # === CONFIG ===
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:slh_secure_2026@localhost:5432/slh_main")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 BOT_TOKEN = os.getenv("EXPERTNET_BOT_TOKEN", "")
 # Broadcast bot â€” @SLH_AIR_bot is the main user-facing bot
 BROADCAST_BOT_TOKEN = os.getenv("SLH_AIR_TOKEN") or os.getenv("CORE_BOT_TOKEN") or os.getenv("AIRDROP_BOT_TOKEN", "")
@@ -495,14 +495,14 @@ async def startup():
     global pool
     # SECURITY CHECK (C-3): warn if any default credentials are still in use
     _security_warnings = []
-    if DATABASE_URL == "postgresql://postgres:slh_secure_2026@localhost:5432/slh_main":
-        _security_warnings.append("DATABASE_URL using default â€” set on Railway")
-    if os.getenv("ADMIN_API_KEY", "slh_admin_2026") == "slh_admin_2026":
-        _security_warnings.append("ADMIN_API_KEY is default â€” set on Railway")
-    if os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026") == "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026":
-        _security_warnings.append("ENCRYPTION_KEY is default â€” CRITICAL: set on Railway before storing real CEX keys!")
-    if os.getenv("ADMIN_BROADCAST_KEY", "slh-broadcast-2026-change-me") == "slh-broadcast-2026-change-me":
-        _security_warnings.append("ADMIN_BROADCAST_KEY is default â€” set on Railway")
+    if not DATABASE_URL:
+        _security_warnings.append("DATABASE_URL not set â€” database startup unavailable")
+    if not os.getenv("ADMIN_API_KEY", "").strip():
+        _security_warnings.append("ADMIN_API_KEY not set â€” legacy admin-key fallback disabled")
+    if not os.getenv("ENCRYPTION_KEY", "").strip():
+        _security_warnings.append("ENCRYPTION_KEY not set â€” secret encryption unavailable")
+    if not os.getenv("ADMIN_BROADCAST_KEY", "").strip():
+        _security_warnings.append("ADMIN_BROADCAST_KEY not set â€” broadcast authentication unavailable")
     if not os.getenv("JWT_SECRET"):
         _security_warnings.append("JWT_SECRET not set â€” JWT auth will be unreliable")
     for w in _security_warnings:
