@@ -125,9 +125,13 @@ async def _bsc_latest_incoming(session) -> list:
 
 
 async def _match_and_ingest(conn, chain: str, deposit: dict) -> Optional[dict]:
+    """Detect an inbound payment and record it for canonical settlement.
+
+    Detection-only: this monitor never grants premium or mutates balances.
+    """
     tx_hash = deposit["tx_hash"]
     existing = await conn.fetchrow(
-        "SELECT 1 FROM bsc_deposits WHERE tx_hash = $1" if chain == "bsc" else "SELECT 1 FROM ton_deposits WHERE tx_hash = $1",
+        "SELECT 1 FROM unmatched_deposits WHERE tx_hash = $1",
         tx_hash,
     )
     if existing:
@@ -136,55 +140,42 @@ async def _match_and_ingest(conn, chain: str, deposit: dict) -> Optional[dict]:
     amount = deposit["value_bnb"] if chain == "bsc" else deposit.get("value_ton", 0.0)
     intent = await conn.fetchrow(
         """
-        SELECT * FROM pending_payment_intents
-        WHERE status = 'open'
-          AND chain = $1
-          AND expires_at > now()
-          AND expected_amount - $2 <= $3
-        ORDER BY abs(expected_amount - $2) ASC, created_at ASC
-        LIMIT 1
+        SELECT id, user_id, expected_amount, plan_key, bot_name
+          FROM pending_payment_intents
+         WHERE status = 'open'
+           AND chain = $1
+           AND expires_at > now()
+           AND abs(expected_amount - $2) <= $3
+         ORDER BY abs(expected_amount - $2) ASC, created_at ASC
+         LIMIT 1
         """,
         chain,
         amount,
         BSC_ABS_TOLERANCE,
     )
 
-    if intent:
-        try:
-            from routes.payments_auto import _grant_premium, _issue_receipt
-        except Exception as e:
-            _state["errors_last"] = f"import payments_auto: {e}"
-            return None
-
-        result = await _grant_premium(
-            conn, intent["user_id"], intent["bot_name"], tx_hash, amount,
-            "BNB" if chain == "bsc" else "TON", intent["plan_key"],
-            chain=chain, source="payment_monitor",
-        )
-        rcpt = None
-        if not result.get("already_processed"):
-            rcpt = await _issue_receipt(
-                conn, intent["user_id"], f"{chain}_deposit",
-                result.get("deposit_id"), amount, "BNB" if chain == "bsc" else "TON",
-            )
-        await conn.execute(
-            "UPDATE pending_payment_intents SET status='matched', tx_hash=$1, matched_at=now() WHERE id=$2",
-            tx_hash, intent["id"],
-        )
-        _state["matches_total"] += 1
-        return {"matched": True, "user_id": intent["user_id"], "receipt": rcpt}
-
     await conn.execute(
         """
-        INSERT INTO unmatched_deposits (chain, tx_hash, from_addr, amount, block_number)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO unmatched_deposits
+            (chain, tx_hash, from_addr, amount, block_number, resolved_user_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (tx_hash) DO NOTHING
         """,
-        chain, tx_hash, deposit.get("from"), amount, deposit.get("block"),
+        chain,
+        tx_hash,
+        deposit.get("from"),
+        amount,
+        deposit.get("block"),
+        intent["user_id"] if intent else None,
     )
     _state["unmatched_total"] += 1
-    return {"matched": False}
 
+    return {
+        "matched_intent": bool(intent),
+        "settled": False,
+        "requires_canonical_settlement": True,
+        "user_id": intent["user_id"] if intent else None,
+    }
 
 async def _loop():
     if not PAYMENT_MONITOR_ENABLED or not BSC_GENESIS:
@@ -199,6 +190,8 @@ async def _loop():
                 if deposits and _pool:
                     async with _pool.acquire() as conn:
                         await _ensure_tables(conn)
+                        from routes.payments_auto import _ensure_payment_tables
+                        await _ensure_payment_tables(conn)
                         for d in deposits:
                             await _match_and_ingest(conn, "bsc", d)
                 _state["last_run_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
