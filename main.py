@@ -11704,10 +11704,9 @@ async def devices_list_admin(
 
 
 # ===== OPS REALITY ENDPOINT — auth via ADMIN_BROADCAST_KEY =====
-# Osif's "single source of truth" admin snapshot. Accepts ADMIN_BROADCAST_KEY
-# (default: slh-broadcast-2026-change-me) because ADMIN_API_KEYS is often
-# empty on Railway (chicken-and-egg with rotation). Read-only; no mutations.
-# Used by /admin/reality.html to give Osif real control without phantom data.
+# Osif's "single source of truth" admin snapshot. Requires the configured
+# ADMIN_BROADCAST_KEY. Read-only; no mutations.
+# Used by /admin/reality.html to give Osif a controlled operational snapshot.
 
 @app.get("/api/ops/reality")
 async def ops_reality(x_broadcast_key: Optional[str] = Header(None)):
