@@ -23,8 +23,9 @@ from fastapi import APIRouter, HTTPException, Request
 router = APIRouter(prefix="/api/payment/monitor", tags=["payment-monitor"])
 
 POLL_INTERVAL = int(os.getenv("PAYMENT_MONITOR_INTERVAL", "30"))
-BSC_GENESIS = os.getenv("BSC_GENESIS_ADDRESS", "0xd061de73B06d5E91bfA46b35EfB7B08b16903da4").lower()
+BSC_GENESIS = os.getenv("BSC_GENESIS_ADDRESS", "").strip().lower()
 BSC_ABS_TOLERANCE = 0.00002
+PAYMENT_MONITOR_ENABLED = os.getenv("PAYMENT_MONITOR_ENABLED", "0") == "1"
 MATCH_WINDOW_SECONDS = 3600
 
 _pool = None
@@ -185,6 +186,10 @@ async def _match_and_ingest(conn, chain: str, deposit: dict) -> Optional[dict]:
 
 
 async def _loop():
+    if not PAYMENT_MONITOR_ENABLED or not BSC_GENESIS:
+        _state["running"] = False
+        _state["errors_last"] = "payment monitor disabled or BSC settlement treasury not configured"
+        return
     _state["running"] = True
     async with aiohttp.ClientSession() as session:
         while True:
@@ -203,6 +208,10 @@ async def _loop():
 
 def start_monitor():
     global _task
+    if not PAYMENT_MONITOR_ENABLED or not BSC_GENESIS:
+        _state["running"] = False
+        _state["errors_last"] = "payment monitor disabled or BSC settlement treasury not configured"
+        return
     if _task and not _task.done():
         return
     _task = asyncio.create_task(_loop())
@@ -221,7 +230,24 @@ class IntentReq:
 
 
 @router.post("/intent")
-async def register_intent(user_id: int, chain: str, expected_amount: float, plan_key: str = "premium", bot_name: str = "ecosystem"):
+async def register_intent(
+    user_id: int,
+    chain: str,
+    expected_amount: float,
+    plan_key: str = "premium",
+    bot_name: str = "ecosystem",
+    request: Request = None,
+):
+    if request is None:
+        raise HTTPException(401, "Authentication required")
+    from main import _require_owner
+    _require_owner(
+        user_id,
+        request.headers.get("authorization"),
+        request.headers.get("x-admin-key"),
+        request.headers.get("x-slh-service-token"),
+        allow_service=False,
+    )
     if chain not in ("bsc", "ton"):
         raise HTTPException(400, "chain must be bsc or ton")
     if _pool is None:
