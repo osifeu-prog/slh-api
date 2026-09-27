@@ -102,8 +102,10 @@ def test_encryption_key_is_mandatory():
 
 def test_no_hardcoded_runtime_secret_fallbacks():
     src = _read("main.py")
+    assert 'DATABASE_URL = os.getenv("DATABASE_URL", "").strip()' in src
     assert 'BOT_SYNC_SECRET = os.getenv("BOT_SYNC_SECRET", "").strip()' in src
     assert 'ADMIN_BROADCAST_KEY = os.getenv("ADMIN_BROADCAST_KEY", "").strip()' in src
+    assert 'postgresql://postgres:slh_secure_2026@localhost:5432/slh_main' not in src
     assert 'slh-bot-sync-2026-default-please-override' not in src
     assert 'slh-broadcast-2026-change-me' not in src
 
