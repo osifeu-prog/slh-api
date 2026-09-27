@@ -401,37 +401,6 @@ async def telegram_initdata_to_bearer(request: Request, call_next):
     return await call_next(request)
 
 
-@app.middleware("http")
-async def telegram_initdata_to_bearer(request: Request, call_next):
-    """Bridge verified Telegram WebApp initData into Bearer JWT auth."""
-    if (
-        not request.headers.get("authorization")
-        and request.headers.get("x-telegram-init-data")
-    ):
-        try:
-            from community_auth import verify_init_data
-            user=verify_init_data(
-                request.headers["x-telegram-init-data"]
-            )
-            if user and JWT_SECRET:
-                token=create_jwt(
-                    int(user["id"]),
-                    user.get("username")
-                )
-                new_headers=[
-                    (k,v)
-                    for k,v in request.scope["headers"]
-                    if k.lower()!=b"authorization"
-                ]
-                new_headers.append(
-                    (b"authorization",f"Bearer {token}".encode())
-                )
-                request.scope["headers"]=new_headers
-        except Exception as e:
-            print(f"[initdata-bridge] failed: {e!r}")
-    return await call_next(request)
-
-
 # ── Admin password hashing (SHA-256 + salt, no extra dependency) ──
 def hash_admin_password(password: str) -> str:
     salt = secrets.token_hex(16)
@@ -5020,7 +4989,7 @@ class BotSyncRequest(BaseModel):
     bot_secret: str  # required to prevent anyone from creating users via this endpoint
 
 
-BOT_SYNC_SECRET = os.getenv("BOT_SYNC_SECRET", "slh-bot-sync-2026-default-please-override")
+BOT_SYNC_SECRET = os.getenv("BOT_SYNC_SECRET", "").strip()
 
 
 @app.post("/api/auth/bot-sync")
@@ -6147,7 +6116,7 @@ async def _tg_send_message(bot_token: str, chat_id: int, text: str, parse_mode: 
         return {"ok": False, "error": str(e)[:200]}
 
 
-ADMIN_BROADCAST_KEY = os.getenv("ADMIN_BROADCAST_KEY", "slh-broadcast-2026-change-me")
+ADMIN_BROADCAST_KEY = os.getenv("ADMIN_BROADCAST_KEY", "").strip()
 
 
 @app.post("/api/broadcast/send")
