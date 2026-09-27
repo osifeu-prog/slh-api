@@ -88,6 +88,19 @@ def test_legacy_deposit_reads_require_owner():
     assert 'async def deposits_user_list(' in src
 
 
+def test_no_hardcoded_runtime_secret_fallbacks():
+    src = _read("main.py")
+    assert 'BOT_SYNC_SECRET = os.getenv("BOT_SYNC_SECRET", "").strip()' in src
+    assert 'ADMIN_BROADCAST_KEY = os.getenv("ADMIN_BROADCAST_KEY", "").strip()' in src
+    assert 'slh-bot-sync-2026-default-please-override' not in src
+    assert 'slh-broadcast-2026-change-me' not in src
+
+
+def test_telegram_initdata_middleware_is_singleton():
+    src = _read("main.py")
+    assert src.count('async def telegram_initdata_to_bearer') == 1
+
+
 def test_python_parses():
     for rel in ("main.py", "shared/guardian_gate.py", "routes/payments_auto.py", "routes/payments_monitor.py"):
         ast.parse(_read(rel), filename=rel)
