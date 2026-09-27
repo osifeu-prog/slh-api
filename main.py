@@ -2188,10 +2188,10 @@ async def _ensure_cex_keys_table(conn):
 
 
 def _get_encryption_key() -> bytes:
-    """Derive a 32-byte AES-GCM key from ENCRYPTION_KEY env var via SHA-256.
-    Accepts any length input â€” hashes to produce a stable 256-bit key.
-    """
-    raw = os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026")
+    """Derive a 32-byte AES-GCM key from the mandatory ENCRYPTION_KEY env var."""
+    raw = os.getenv("ENCRYPTION_KEY", "").strip()
+    if not raw:
+        raise RuntimeError("ENCRYPTION_KEY is required for secret encryption")
     return hashlib.sha256(raw.encode("utf-8")).digest()
 
 
@@ -2240,7 +2240,9 @@ def _decrypt_secret(blob: str) -> str:
 
 def _encrypt_secret_xor(secret: str) -> str:
     """LEGACY v1 XOR encryption â€” kept only for backwards compat / fallback."""
-    key = os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026")
+    key = os.getenv("ENCRYPTION_KEY", "").strip()
+    if not key:
+        raise RuntimeError("ENCRYPTION_KEY is required for legacy secret encryption")
     result = []
     for i, c in enumerate(secret):
         result.append(chr(ord(c) ^ ord(key[i % len(key)])))
@@ -2251,7 +2253,9 @@ def _decrypt_secret_xor(hex_str: str) -> str:
     """LEGACY v1 XOR decryption â€” called automatically by _decrypt_secret for old data."""
     try:
         encrypted = bytes.fromhex(hex_str).decode("latin-1")
-        key = os.getenv("ENCRYPTION_KEY", "slh_dev_key_CHANGE_ME_IN_PRODUCTION_2026")
+        key = os.getenv("ENCRYPTION_KEY", "").strip()
+        if not key:
+            raise RuntimeError("ENCRYPTION_KEY is required for legacy secret decryption")
         result = []
         for i, c in enumerate(encrypted):
             result.append(chr(ord(c) ^ ord(key[i % len(key)])))
