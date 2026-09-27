@@ -11031,8 +11031,15 @@ class CreditCardReq(BaseModel):
 
 
 @app.post("/api/payment/credit-card/submit")
-async def card_payment_submit(req: CreditCardReq):
-    """Submit a credit card payment request. Actual charging happens via provider integration (future)."""
+async def card_payment_submit(
+    req: CreditCardReq,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """Submit a credit card payment request for an authenticated user."""
+    if not req.user_id:
+        raise HTTPException(400, "user_id is required")
+    _require_owner(req.user_id, authorization, x_admin_key, allow_service=False)
     if req.amount_ils < 1 or req.amount_ils > 50000:
         raise HTTPException(400, "Amount must be between ₪1 and ₪50,000")
     if not req.card_last4 or len(req.card_last4) != 4 or not req.card_last4.isdigit():
