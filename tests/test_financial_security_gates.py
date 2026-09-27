@@ -44,6 +44,14 @@ def test_bsc_binding_checks_pool_before_query():
     assert 'SELECT eth_wallet FROM web_users WHERE telegram_id=$1' in src
 
 
+def test_payment_settlement_has_db_unique_idempotency():
+    src = _read("routes/payments_auto.py")
+    assert "CREATE TABLE IF NOT EXISTS payment_settlements" in src
+    assert "UNIQUE(chain, tx_hash)" in src
+    assert "ON CONFLICT (chain, tx_hash) DO NOTHING" in src
+    assert 'Transaction is already settled for another user' in src
+
+
 def test_external_payment_requires_trusted_writer():
     src = _read("routes/payments_auto.py")
     assert '_require_trusted_payment_writer(request)' in src
