@@ -55,6 +55,31 @@ def test_payment_monitor_defaults_disabled():
     assert 'BSC_GENESIS = os.getenv("BSC_GENESIS_ADDRESS", "").strip().lower()' in src
 
 
+def test_registration_unlock_user_methods_require_owner():
+    src = _read("main.py")
+    assert 'if req.method != "admin":' in src
+    assert '_require_owner(req.user_id, authorization, x_admin_key, allow_service=False)' in src
+
+
+def test_bank_transfer_submit_requires_owner():
+    src = _read("main.py")
+    assert 'async def submit_bank_transfer(' in src
+    assert '_require_owner(req.user_id, authorization, x_admin_key, allow_service=False)' in src
+
+
+def test_bank_transfer_history_requires_owner():
+    src = _read("main.py")
+    assert 'async def my_bank_transfers(' in src
+    assert '_require_owner(user_id, authorization, x_admin_key, allow_service=False)' in src
+
+
+def test_legacy_deposit_reads_require_owner():
+    src = _read("main.py")
+    assert 'async def deposits_status(' in src
+    assert '_require_owner(int(d["user_id"]), authorization, x_admin_key, allow_service=False)' in src
+    assert 'async def deposits_user_list(' in src
+
+
 def test_python_parses():
     for rel in ("main.py", "shared/guardian_gate.py", "routes/payments_auto.py", "routes/payments_monitor.py"):
         ast.parse(_read(rel), filename=rel)
