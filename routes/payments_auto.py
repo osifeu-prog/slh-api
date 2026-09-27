@@ -315,7 +315,7 @@ async def ton_auto_verify(req: TonVerifyReq, request: Request):
     if not tx_hash or len(tx_hash) < 40:
         raise HTTPException(400, "invalid tx_hash")
 
-    expected = req.expected_amount_ton or PREMIUM_MIN_TON
+    expected = max(PREMIUM_MIN_TON, float(req.expected_amount_ton or 0.0))
     key_q = f"&api_key={TONCENTER_API_KEY}" if TONCENTER_API_KEY else ""
     url = f"https://toncenter.com/api/v2/getTransactions?address={TON_PAY_ADDRESS}&limit=50{key_q}"
 
