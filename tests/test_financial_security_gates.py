@@ -62,6 +62,14 @@ def test_external_payment_requires_trusted_writer():
     assert '_require_trusted_payment_writer(request)' in src
 
 
+def test_payment_monitor_is_detection_only():
+    src = _read("routes/payments_monitor.py")
+    assert 'settled": False' in src
+    assert 'requires_canonical_settlement' in src
+    assert '_grant_premium' not in src
+    assert '_issue_receipt' not in src
+
+
 def test_payment_monitor_defaults_disabled():
     src = _read("routes/payments_monitor.py")
     assert 'PAYMENT_MONITOR_ENABLED = os.getenv("PAYMENT_MONITOR_ENABLED", "0") == "1"' in src
