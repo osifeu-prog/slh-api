@@ -178,6 +178,12 @@ app = FastAPI(
     openapi_url="/openapi.json" if _DOCS_ENABLED else None,
 )
 
+@app.get("/api/ido/status")
+async def ido_status():
+    """Public, read-only IDO service status endpoint."""
+    return {"ok": True, "service": "slh-api", "status": "ready"}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
